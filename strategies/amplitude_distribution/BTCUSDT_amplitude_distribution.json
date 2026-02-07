@@ -1,0 +1,326 @@
+{
+    "symbol": "BTCUSDT",
+    "leverage": 10,
+    "stop_loss_pct": 0.08,
+    "generated_at": "2026-02-07 12:53:56",
+    "best_period": "1m",
+    "best_period_return": 0.045976,
+    "strategy_type": "amplitude_distribution",
+    "strategies": {
+        "1d": {
+            "period": "1d",
+            "total_adj_ret": 0.027877,
+            "sample_count": 365,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.0032,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.1654,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.3853,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                },
+                {
+                    "id": 4,
+                    "amplitude_pct": 4,
+                    "weight": 0.266,
+                    "trigger_drop": 0.04,
+                    "trigger_rise": 0.04
+                },
+                {
+                    "id": 5,
+                    "amplitude_pct": 5,
+                    "weight": 0.0858,
+                    "trigger_drop": 0.05,
+                    "trigger_rise": 0.05
+                },
+                {
+                    "id": 6,
+                    "amplitude_pct": 6,
+                    "weight": 0.067,
+                    "trigger_drop": 0.06,
+                    "trigger_rise": 0.06
+                },
+                {
+                    "id": 7,
+                    "amplitude_pct": 7,
+                    "weight": 0.006,
+                    "trigger_drop": 0.07,
+                    "trigger_rise": 0.07
+                },
+                {
+                    "id": 8,
+                    "amplitude_pct": 8,
+                    "weight": 0.0154,
+                    "trigger_drop": 0.08,
+                    "trigger_rise": 0.08
+                },
+                {
+                    "id": 9,
+                    "amplitude_pct": 9,
+                    "weight": 0.0059,
+                    "trigger_drop": 0.09,
+                    "trigger_rise": 0.09
+                }
+            ]
+        },
+        "12h": {
+            "period": "12h",
+            "total_adj_ret": 0.027508,
+            "sample_count": 730,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.0346,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.5357,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.3085,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                },
+                {
+                    "id": 4,
+                    "amplitude_pct": 4,
+                    "weight": 0.0921,
+                    "trigger_drop": 0.04,
+                    "trigger_rise": 0.04
+                },
+                {
+                    "id": 5,
+                    "amplitude_pct": 5,
+                    "weight": 0.0151,
+                    "trigger_drop": 0.05,
+                    "trigger_rise": 0.05
+                },
+                {
+                    "id": 6,
+                    "amplitude_pct": 6,
+                    "weight": 0.0089,
+                    "trigger_drop": 0.06,
+                    "trigger_rise": 0.06
+                },
+                {
+                    "id": 7,
+                    "amplitude_pct": 7,
+                    "weight": 0.0024,
+                    "trigger_drop": 0.07,
+                    "trigger_rise": 0.07
+                },
+                {
+                    "id": 8,
+                    "amplitude_pct": 8,
+                    "weight": 0.0027,
+                    "trigger_drop": 0.08,
+                    "trigger_rise": 0.08
+                }
+            ]
+        },
+        "6h": {
+            "period": "6h",
+            "total_adj_ret": 0.025116,
+            "sample_count": 1460,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.2314,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.6158,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.1214,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                },
+                {
+                    "id": 4,
+                    "amplitude_pct": 4,
+                    "weight": 0.0252,
+                    "trigger_drop": 0.04,
+                    "trigger_rise": 0.04
+                },
+                {
+                    "id": 5,
+                    "amplitude_pct": 5,
+                    "weight": 0.0047,
+                    "trigger_drop": 0.05,
+                    "trigger_rise": 0.05
+                }
+            ]
+        },
+        "4h": {
+            "period": "4h",
+            "total_adj_ret": 0.02477,
+            "sample_count": 2190,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.4508,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.4766,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.0622,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                },
+                {
+                    "id": 4,
+                    "amplitude_pct": 4,
+                    "weight": 0.009,
+                    "trigger_drop": 0.04,
+                    "trigger_rise": 0.04
+                }
+            ]
+        },
+        "2h": {
+            "period": "2h",
+            "total_adj_ret": 0.028463,
+            "sample_count": 4380,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.819,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.1695,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.0103,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                }
+            ]
+        },
+        "1h": {
+            "period": "1h",
+            "total_adj_ret": 0.035107,
+            "sample_count": 8760,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.9589,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.0396,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                },
+                {
+                    "id": 3,
+                    "amplitude_pct": 3,
+                    "weight": 0.0014,
+                    "trigger_drop": 0.03,
+                    "trigger_rise": 0.03
+                }
+            ]
+        },
+        "30m": {
+            "period": "30m",
+            "total_adj_ret": 0.040594,
+            "sample_count": 17520,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.9923,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                },
+                {
+                    "id": 2,
+                    "amplitude_pct": 2,
+                    "weight": 0.0076,
+                    "trigger_drop": 0.02,
+                    "trigger_rise": 0.02
+                }
+            ]
+        },
+        "15m": {
+            "period": "15m",
+            "total_adj_ret": 0.043908,
+            "sample_count": 35040,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 0.999,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                }
+            ]
+        },
+        "1m": {
+            "period": "1m",
+            "total_adj_ret": 0.045976,
+            "sample_count": 525603,
+            "grids": [
+                {
+                    "id": 1,
+                    "amplitude_pct": 1,
+                    "weight": 1.0,
+                    "trigger_drop": 0.01,
+                    "trigger_rise": 0.01
+                }
+            ]
+        }
+    }
+}
