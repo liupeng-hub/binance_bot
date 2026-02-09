@@ -7,34 +7,33 @@ from datetime import datetime
 # Add the current directory to sys.path to allow imports from modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.data_provider import fetch_binance_history
-from core.strategy_calculator import analyze_strategy
+from src.utils.data_provider import fetch_binance_history
+from src.generators.strategy_calculator import analyze_strategy
 
-def generate_strategies(symbols):
+def generate_strategies(symbols, days=365):
     """
     为每个交易对生成 3 种策略配置文件。
-    
-    策略类型:
-    1. Martingale (马丁格尔): 固定权重 (倒金字塔加仓)
-    2. Probability (概率分布): 固定权重 (正态分布/高频优先)
-    3. Amplitude Distribution (振幅分布): 根据历史数据动态计算权重 (全周期回测最优)
     """
     strategy_types = ["martingale", "probability", "amplitude_distribution"]
     
     for symbol in symbols:
-        print(f"\n🚀 开始为 {symbol} 生成策略配置...")
+        print(f"\n🚀 开始为 {symbol} 生成策略配置 (历史: {days}天)...")
         
         for st_type in strategy_types:
             try:
                 if st_type == "amplitude_distribution":
                     # 特殊处理：Binance 的振幅分布策略通过回测生成
-                    run_backtest_all_periods(symbol)
+                    run_backtest_all_periods(symbol, days)
                 else:
                     # 其他固定逻辑策略
                     config = create_fixed_strategy_config(symbol, st_type)
                     save_strategy_config(symbol, st_type, config)
             except Exception as e:
                 print(f"❌ 生成 {st_type} 策略失败: {e}")
+
+# 为了兼容 main.py 的调用习惯，添加别名
+def run_analysis(symbol, days=365):
+    generate_strategies([symbol], days)
 
 def create_fixed_strategy_config(symbol, strategy_type, num_grids=10, profit_amp=0.012, step_drop=0.01):
     grids = []
@@ -86,8 +85,8 @@ def create_fixed_strategy_config(symbol, strategy_type, num_grids=10, profit_amp
     
     return strategy
 
-def run_backtest_all_periods(symbol="BTCUSDT"):
-    # 全周期回测，获取1年数据 (逆序下载，先快后慢)
+def run_backtest_all_periods(symbol="BTCUSDT", days=365):
+    # 全周期回测，获取指定天数数据 (逆序下载，先快后慢)
     periods = ["1d", "12h", "6h", "4h", "2h", "1h", "30m", "15m", "1m"] 
     results = {}
     best_period = None
@@ -96,8 +95,7 @@ def run_backtest_all_periods(symbol="BTCUSDT"):
     print(f"   📊 正在执行 {symbol} 全周期回测 (Amplitude Distribution)...")
     
     for p in periods:
-        # 获取 1 年数据
-        days = 365
+        # 获取数据
         df = fetch_binance_history(symbol, p, days)
         
         if df.empty:
@@ -145,7 +143,11 @@ def run_backtest_all_periods(symbol="BTCUSDT"):
     save_strategy_config(symbol, "amplitude_distribution", final_config)
 
 def save_strategy_config(symbol, strategy_type, config):
-    base_dir = os.path.join(os.path.dirname(__file__), "strategies")
+    # 指向 config/strategies
+    # src/generators/run_strategy_gen.py -> src/generators -> src -> binance_bot
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    base_dir = os.path.join(root_dir, "config", "strategies")
+    
     sub_dir = os.path.join(base_dir, strategy_type)
     os.makedirs(sub_dir, exist_ok=True)
     

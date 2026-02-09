@@ -4,3 +4,14 @@ numpy
 tabulate
 python-dotenv
 websocket-client
+streamlit
+streamlit-lightweight-charts
+streamlit-autorefresh
+backtrader
+sqlalchemy
+cryptography
+psutil
+plotly
+optuna
+click
+requests

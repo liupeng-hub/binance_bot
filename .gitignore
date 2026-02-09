@@ -6,3 +6,8 @@ venv/
 .idea/
 .vscode/
 data/
+logs/
+.secret_key
+*.db
+*.log
+config/strategies/

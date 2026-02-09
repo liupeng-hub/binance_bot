@@ -10,8 +10,10 @@ def fetch_binance_history(symbol="BTCUSDT", timeframe="1m", days=365):
     获取币安合约历史K线 (优先读取本地缓存)
     """
     safe_symbol = symbol.replace("/", "")
-    # 数据目录在 core 上一级的 data 目录
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    # 数据目录在 core 上一级的 data 目录 (已修正为项目根目录下的 data)
+    # src/utils/data_provider.py -> src/utils -> src -> binance_bot
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    data_dir = os.path.join(root_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
     
     # 预期时间范围
