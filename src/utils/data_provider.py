@@ -44,14 +44,21 @@ def fetch_binance_history(symbol="BTCUSDT", timeframe="1m", days=365):
     exchange_config = {
         'enableRateLimit': True,
         'verbose': False, 
-        'proxies': {
-            'http': 'http://127.0.0.1:1087',
-            'https': 'http://127.0.0.1:1087',
-        },
         'options': {
             'defaultType': 'future'
         }
     }
+    
+    # 检查环境变量中的代理
+    http_proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
+    https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
+    
+    if http_proxy or https_proxy:
+        exchange_config['proxies'] = {}
+        if http_proxy:
+            exchange_config['proxies']['http'] = http_proxy
+        if https_proxy:
+            exchange_config['proxies']['https'] = https_proxy
     
     exchange = ccxt.binanceusdm(exchange_config)
     

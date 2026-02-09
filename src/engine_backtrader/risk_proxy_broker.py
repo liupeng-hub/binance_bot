@@ -14,6 +14,10 @@ class RiskProxyBroker:
         self._original_submit = self._broker.submit
         self._broker.submit = self.submit_with_check
         
+        # 确保代理对象也有 set_order_notifier 方法
+        if hasattr(self._broker, 'set_order_notifier'):
+            self.set_order_notifier = self._broker.set_order_notifier
+
     def __getattr__(self, name):
         # 将所有调用转发给真实的 Broker
         return getattr(self._broker, name)

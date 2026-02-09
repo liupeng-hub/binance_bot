@@ -15,3 +15,4 @@ plotly
 optuna
 click
 requests
+psycopg2-binary

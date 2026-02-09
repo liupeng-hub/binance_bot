@@ -36,9 +36,20 @@ class BinanceStore:
 
         self._broker = None
         self._data = None
+        self._user_stream = None
 
     def get_exchange(self):
         return self.exchange
+
+    def start_user_stream(self):
+        """
+        Starts the User Data Stream for real-time order/account updates.
+        """
+        if self._user_stream is None:
+            from .bt_binance_user_stream import BinanceUserStream
+            self._user_stream = BinanceUserStream(self)
+            self._user_stream.start()
+        return self._user_stream
 
     def get_data(self, symbol='BTC/USDT', timeframe='1m', days=30, use_websocket=True, **kwargs):
         """

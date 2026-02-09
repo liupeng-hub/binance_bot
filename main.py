@@ -18,7 +18,7 @@ def cli():
     """Binance Bot CLI - 专业量化交易系统"""
     load_dotenv()
 
-@click.command()
+@cli.command()
 @click.option('--strategy', required=True, help='选择策略 (使用 list 命令查看可用策略)')
 @click.option('--symbol', default='BTC/USDT', help='交易标的 (例如 BTC/USDT)')
 @click.option('--mode', default='sim', type=click.Choice(['sim', 'live']), help='运行模式: sim(模拟) 或 live(实盘)')
@@ -31,6 +31,12 @@ def trade(strategy, symbol, mode, days, timeframe, params, no_ws):
     from src.engine_backtrader.bt_binance_store import BinanceStore
     from src.utils.strategy_loader import StrategyLoader
     from src.utils.log_utils import format_log
+    from src.engine_backtrader.risk_manager import RiskManager
+    from src.engine_backtrader.risk_proxy_broker import RiskProxyBroker
+    from src.utils.db_manager import db_manager
+    
+    # 初始化数据库
+    db_manager.init_db()
     
     # 加载策略
     loader = StrategyLoader(os.path.join(os.path.dirname(__file__), 'src', 'strategies'))
@@ -66,13 +72,48 @@ def trade(strategy, symbol, mode, days, timeframe, params, no_ws):
     # 初始化 Store
     store = BinanceStore(env_file='.env', testnet=(mode=='sim'))
     
+    # 1. 创建基础 Broker
     if mode == 'live':
         click.secho("⚠️  警告: 正在以【实盘模式】运行，使用【真实资金】交易！", fg='red', bold=True)
-        cerebro.broker = store.get_broker()
+        # 传递 mode='live' 给 Broker
+        base_broker = store.get_broker(mode='live')
+        
+        # 2. 实盘模式：初始化 LiveOrderNotifier
+        from src.engine_backtrader.live_order_notifier import LiveOrderNotifier
+        order_notifier = LiveOrderNotifier(
+            exchange=store.get_exchange(),
+            broker=base_broker
+        )
+        base_broker.set_order_notifier(order_notifier)
+        
+        # 启动 User Stream (订单通知器)
+        order_notifier.start()
+        click.echo("✅ 实盘订单流已连接")
+        
     else:
         click.echo("ℹ️  正在以【模拟模式】运行。")
-        cerebro.broker.setcash(100000.0)
-        cerebro.broker.setcommission(commission=0.001)
+        base_broker = store.get_broker(mode='sim')
+        base_broker.setcash(10000000.0)
+        base_broker.setcommission(commission=0.001)
+        
+        # 2. 回测模式：初始化 BacktestOrderNotifier
+        from src.engine_backtrader.backtest_order_notifier import BacktestOrderNotifier
+        order_notifier = BacktestOrderNotifier(broker=base_broker)
+        base_broker.set_order_notifier(order_notifier)
+        order_notifier.start()
+
+    # 3. 集成风控代理 (RiskProxyBroker 包装 BaseBroker)
+    risk_config = {
+        'max_order_value': 500000.0,
+        'max_daily_drawdown': 0.10,
+        'restricted_symbols': [] 
+    }
+    risk_manager = RiskManager(risk_config)
+    
+    # 将包装后的 Broker 赋值给 cerebro
+    cerebro.broker = RiskProxyBroker(base_broker, risk_manager)
+    click.echo("✅ 风控系统已激活")
+    # ------------------
 
     # 添加数据
     use_websocket = not no_ws

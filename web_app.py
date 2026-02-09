@@ -145,9 +145,13 @@ def instance_monitor():
         loader = get_strategy_loader()
         strategies = loader.load_strategies()
 
-        # 添加自动刷新机制 (每 2 秒刷新一次)
+        # 添加自动刷新机制 (降低频率到 5 秒)
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=2000, limit=None, key="instance_monitor_refresh")
+        st_autorefresh(interval=5000, limit=None, key="instance_monitor_refresh")
+        
+        # 添加手动刷新按钮
+        if st.button("🔄 立即刷新状态", key="refresh_instances"):
+            st.rerun()
         
         for inst in instances:
             # 1. 自动状态检查
@@ -245,12 +249,12 @@ def instance_monitor():
                     
                     if latest_eq:
                         # 尝试获取初始资金
-                        initial_capital = 100000.0 # Default
+                        initial_capital = 10000000.0 # Default
                         try:
                             cfg = json.loads(inst.config_json)
                             # 兼容新旧结构
                             if 'sys' in cfg:
-                                initial_capital = float(cfg['sys'].get('capital', 100000.0))
+                                initial_capital = float(cfg['sys'].get('capital', 10000000.0))
                             elif 'capital' in cfg:
                                 initial_capital = float(cfg['capital'])
                         except:
@@ -479,7 +483,7 @@ def instance_monitor():
                                 # 绘制资金曲线
                                 fig = px.line(df_eq, x='Time', y='Total', title='总资产净值 (USDT)')
                                 fig.update_layout(height=350)
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, use_container_width=True, key=f"equity_chart_{inst.id}")
                                 
                             with col_eq2:
                                 st.subheader("🍰 当前持仓")
@@ -494,7 +498,7 @@ def instance_monitor():
                                     })
                                     fig_pie = px.pie(df_alloc, values='Value', names='Asset', hole=0.4)
                                     fig_pie.update_layout(height=350, showlegend=True)
-                                    st.plotly_chart(fig_pie, use_container_width=True)
+                                    st.plotly_chart(fig_pie, use_container_width=True, key=f"pos_pie_{inst.id}")
                                     
                                     st.metric("当前净值", f"${latest['Total']:.2f}")
                                     st.metric("当前现金", f"${latest['Cash']:.2f}")
@@ -890,7 +894,7 @@ def trading_desk():
                 # 系统参数默认值
                 def_tf_idx = 5 # 1h
                 def_days = 30
-                def_cap = 100000.0
+                def_cap = 10000000.0
                 
                 if applied:
                     sys_app = applied.get('sys', {})
@@ -898,11 +902,11 @@ def trading_desk():
                     if sys_app.get('timeframe') in tfs:
                         def_tf_idx = tfs.index(sys_app.get('timeframe'))
                     def_days = int(sys_app.get('days', 30))
-                    def_cap = float(sys_app.get('capital', 100000.0))
+                    def_cap = float(sys_app.get('capital', 10000000.0))
                 
                 timeframe = c1.selectbox("K线周期", ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"], index=def_tf_idx)
                 days = c2.number_input("历史天数", min_value=1, value=def_days)
-                capital = c3.number_input("初始资金 (USDT)", min_value=100.0, value=def_cap, step=100.0)
+                capital = c3.number_input("初始资金 (USDT)", min_value=100.0, value=def_cap, step=10000.0)
                     
                 if st.button("🚀 启动实例", type="primary"):
                     session = db_manager.get_session()
@@ -1091,7 +1095,7 @@ def optimization_lab():
             c_sys1, c_sys2, c_sys3 = st.columns(3)
             timeframe = c_sys1.selectbox("K线周期", ["1h", "4h", "1d", "15m"], key="opt_tf")
             days = c_sys2.number_input("历史天数", value=30, key="opt_days")
-            capital = c_sys3.number_input("初始资金", value=100000.0, key="opt_cap")
+            capital = c_sys3.number_input("初始资金", value=10000000.0, key="opt_cap")
             
             n_trials = 50
             if is_optuna:
@@ -1167,9 +1171,13 @@ def optimization_lab():
     if not jobs:
         st.info("暂无优化任务")
     else:
-        # 自动刷新
+        # 自动刷新 (降低频率到 10 秒)
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=5000, key="opt_refresh")
+        st_autorefresh(interval=10000, key="opt_refresh")
+        
+        # 添加手动刷新按钮
+        if st.button("🔄 刷新任务列表", key="refresh_jobs"):
+            st.rerun()
         
         for job in jobs:
             with st.container():
@@ -1269,7 +1277,7 @@ def optimization_lab():
                                         # 沿用调优时的环境配置，或者设为默认
                                         'timeframe': sys_cfg.get('timeframe', '1h'),
                                         'days': sys_cfg.get('days', 30),
-                                        'capital': sys_cfg.get('capital', 100000.0)
+                                        'capital': sys_cfg.get('capital', 10000000.0)
                                     }
                                 }
                                 st.session_state['applied_opt_config'] = applied_config

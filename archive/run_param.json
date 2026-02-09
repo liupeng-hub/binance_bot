@@ -1,9 +1,0 @@
-{
-    "bot_realtime": {
-        "martingale": ["BTCUSDT", "ETHUSDT"],
-        "probability": ["BNBUSDT"]
-    },
-    "bot_gridmaker": {
-        "amplitude_distribution": ["SOLUSDT", "DOGEUSDT"]
-    }
-}

@@ -2,17 +2,73 @@ import os
 import glob
 import pandas as pd
 import json
+from .db_manager import db_manager
+from .db_models import MarketData
 
 def load_kline_data(symbol, start_ts=None, end_ts=None, limit=10000, timeframe=None):
     """
     加载指定标的的 K 线数据，支持时间范围筛选
-    :param symbol: 交易对
+    优先尝试从数据库加载，如果失败或数据不足，则回退到 CSV 文件
+    
+    :param symbol: 交易对 (e.g. BTC/USDT)
     :param start_ts: 开始时间戳 (秒)
     :param end_ts: 结束时间戳 (秒)
     :param limit: 默认限制条数
-    :param timeframe: K线周期 (e.g., '1m', '1h', '1d')，如果提供则精确匹配
+    :param timeframe: K线周期 (e.g., '1m', '1h', '1d')
     """
-    # 查找 data 目录下最新的 CSV 文件
+    
+    # --- 1. 尝试从数据库加载 ---
+    try:
+        session = db_manager.get_session()
+        query = session.query(MarketData).filter(MarketData.symbol == symbol)
+        
+        if timeframe:
+            query = query.filter(MarketData.timeframe == timeframe)
+            
+        if start_ts:
+            start_dt = pd.to_datetime(start_ts, unit='s')
+            query = query.filter(MarketData.timestamp >= start_dt)
+            
+        if end_ts:
+            end_dt = pd.to_datetime(end_ts, unit='s')
+            query = query.filter(MarketData.timestamp <= end_dt)
+            
+        # 排序和限制
+        query = query.order_by(MarketData.timestamp.asc())
+        
+        # 如果没有指定时间范围，只取最后 limit 条
+        if not start_ts and not end_ts:
+            # SQL 优化: 先倒序取 limit，再正序
+            # 注意: SQLite/PG 语法可能略有差异，这里使用 Python 切片或子查询
+            # 简单起见，直接查询
+            count = query.count()
+            if count > limit:
+                query = query.offset(count - limit)
+        
+        # 执行查询
+        # 使用 pandas.read_sql 会更方便，但这里我们有 session
+        # 手动转换
+        results = query.all()
+        session.close()
+        
+        if results:
+            data = [{
+                'time': int(r.timestamp.timestamp()),
+                'open': r.open,
+                'high': r.high,
+                'low': r.low,
+                'close': r.close,
+                'volume': r.volume
+            } for r in results]
+            
+            df = pd.DataFrame(data)
+            return df
+            
+    except Exception as e:
+        # print(f"DB Load Error: {e}") # 调试用
+        pass # Fallback to CSV
+
+    # --- 2. 回退到 CSV 加载 (原有逻辑) ---
     # src/utils/data_helper.py -> src/utils -> src -> binance_bot
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     data_dir = os.path.join(root_dir, 'data')
@@ -44,9 +100,18 @@ def load_kline_data(symbol, start_ts=None, end_ts=None, limit=10000, timeframe=N
     # 改进：如果文件列表中有明显包含目标时间段的文件，应该优先选它
     # (这需要解析文件名中的时间段，暂且先保持取最新，但依靠 timeframe 过滤应该能解决大部分问题)
     
-    latest_file = max(files, key=os.path.getctime)
+    # 按照修改时间排序，取最新的
+    files.sort(key=os.path.getmtime, reverse=True)
+    latest_file = files[0]
+    
+    # 如果有多个文件，尝试找到包含 start_ts 的文件 (简单启发式)
+    # 比如文件名包含 YYYYMMDD
+    # 但最可靠的还是读取文件头尾 (但这会比较慢)
+    # 考虑到我们通常只有一个最新的完整文件，或者按时间分割的文件
+    # 如果最新的文件时间太早，可能不包含我们需要的数据
     
     try:
+        # 尝试读取最新的文件
         df = pd.read_csv(latest_file)
         # 兼容不同的列名
         if 'datetime' in df.columns:

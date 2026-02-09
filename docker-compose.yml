@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # TimescaleDB (基于 PostgreSQL)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: binance_bot_db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=mybot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 可选: Adminer (Web 数据库管理界面)
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - timescaledb
+
+volumes:
+  timescaledb_data:

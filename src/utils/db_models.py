@@ -47,6 +47,25 @@ class StrategyInstance(Base):
     
     user = relationship("User", back_populates="instances")
 
+class StrategyState(Base):
+    """
+    策略状态持久化表 (P0)
+    用于存储策略的运行时状态（持仓、未成交订单），以便重启恢复。
+    """
+    __tablename__ = 'strategy_states'
+    
+    id = Column(Integer, primary_key=True)
+    instance_id = Column(String, ForeignKey('strategy_instances.id'), unique=True, nullable=False)
+    
+    # 状态数据 (JSON)
+    # {
+    #   "positions": {"BTC/USDT": {"size": 1.0, "price": 50000}},
+    #   "open_orders": [{"id": "123", "symbol": "BTC/USDT", "side": "BUY", ...}],
+    #   "metadata": {"last_processed_dt": "..."}
+    # }
+    state_json = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class BacktestResult(Base):
     """
     专门用于存储回测/实盘的历史绩效报告。
@@ -162,3 +181,28 @@ class OptimizationJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User")
+
+class MarketData(Base):
+    """
+    市场数据表 (K线数据)
+    设计为兼容 TimescaleDB 的 Hypertable
+    """
+    __tablename__ = 'market_data'
+    
+    # 联合主键: time + symbol + timeframe
+    # 注意: 在 TimescaleDB 中，time 必须是主键的一部分
+    timestamp = Column(DateTime, primary_key=True, nullable=False)
+    symbol = Column(String, primary_key=True, nullable=False)
+    timeframe = Column(String, primary_key=True, nullable=False) # e.g. '1m', '1h'
+    
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    
+    # 额外的元数据 (可选)
+    # created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<MarketData({self.symbol} {self.timeframe} @ {self.timestamp}: C={self.close})>"
