@@ -23,8 +23,14 @@ class ExchangeConfig(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
     exchange_name = Column(String, default='binance')
+    
+    # 真实交易 (Live)
     api_key_enc = Column(String) # Encrypted API Key
     secret_key_enc = Column(String) # Encrypted Secret Key
+    
+    # 测试网交易 (Testnet)
+    testnet_api_key_enc = Column(String) # Encrypted API Key (Testnet)
+    testnet_secret_key_enc = Column(String) # Encrypted Secret Key (Testnet)
     
     user = relationship("User", back_populates="configs")
 

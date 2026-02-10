@@ -6,12 +6,7 @@ import threading
 import queue
 import os
 import sys
-
-# 添加项目根目录到 sys.path 以导入 core 模块
-# project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-# if project_root not in sys.path:
-#     sys.path.insert(0, project_root)
-
+from src.utils.redis_client import redis_client
 from src.utils.data_provider import fetch_binance_history
 
 class BinanceData(bt.feeds.PandasData):
@@ -27,6 +22,7 @@ class BinanceData(bt.feeds.PandasData):
         ('_realtime', False),
         ('poll_interval', 3), # 轮询间隔 (秒)
         ('use_websocket', True), # 是否使用 WebSocket
+        ('instance_id', None), # 用于推送实时数据到 Redis
     )
 
     def __init__(self):
@@ -102,7 +98,12 @@ class BinanceData(bt.feeds.PandasData):
         
         # Binance Futures WebSocket URL
         # e.g. wss://fstream.binance.com/ws/btcusdt@kline_1m
-        socket_url = f"wss://fstream.binance.com/ws/{symbol}@kline_{interval}"
+        if getattr(self.store, 'testnet', False):
+            base_url = "wss://stream.binancefuture.com/ws"
+        else:
+            base_url = "wss://fstream.binance.com/ws"
+            
+        socket_url = f"{base_url}/{symbol}@kline_{interval}"
         
         print(f"🚀 正在连接 WebSocket: {socket_url}")
         
@@ -117,24 +118,44 @@ class BinanceData(bt.feeds.PandasData):
                 # 格式参考: https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams
                 k = msg.get('k')
                 if k:
+                    is_closed = k.get('x', False) # K线是否完结
                     current_time = datetime.fromtimestamp(k['t'] / 1000.0)
                     close_price = float(k['c'])
                     volume = float(k['v'])
                     
-                    # 打印调试信息 (每分钟第一秒或特定条件)
-                    # 为了不刷屏，仅打印收盘价
-                    # if self.p._realtime: # 冗余检查，但在上下文中明确
-                    #     print(f"📡 WS 推送: {current_time} | 价格: {close_price} | Vol: {volume}")
+                    # --- Redis 实时推送 (Developing Candle) ---
+                    if self.p.instance_id:
+                        candle = {
+                            'time': int(k['t'] / 1000),
+                            'open': float(k['o']),
+                            'high': float(k['h']),
+                            'low': float(k['l']),
+                            'close': close_price,
+                            'volume': volume,
+                            'symbol': self.p.symbol,
+                            'is_closed': is_closed
+                        }
+                        # 直接推送到 Redis，不通过 Backtrader Queue
+                        redis_client.publish_market_data(self.p.instance_id, candle)
+                    # ----------------------------------------
+                    
+                    # 打印调试信息
+                    if self.p._realtime: 
+                        status = "✅ 已完结" if is_closed else "⏳ 进行中"
+                        # print(f"📡 WS [{self.p.symbol}] {status}: {current_time} | 收: {close_price} | 量: {volume}")
 
-                    line = (
-                        current_time,
-                        float(k['o']), # Open
-                        float(k['h']), # High
-                        float(k['l']), # Low
-                        close_price,   # Close
-                        volume
-                    )
-                    self._realtime_queue.put(line)
+                    # 逻辑：
+                    # 1. 如果 K 线已完结，将其放入队列 (供 Backtrader 引擎使用)
+                    if is_closed:
+                        line = (
+                            current_time,
+                            float(k['o']), # Open
+                            float(k['h']), # High
+                            float(k['l']), # Low
+                            close_price,   # Close
+                            volume
+                        )
+                        self._realtime_queue.put(line)
                     
             except Exception as e:
                 print(f"WS Message Error: {e}")
@@ -208,16 +229,26 @@ class BinanceData(bt.feeds.PandasData):
         while self._realtime_running:
             try:
                 # 获取最新 ticker 作为实时价格
-                # 或者获取最后一根 K 线。Ticker 更快。
                 ticker = exchange.fetch_ticker(symbol)
                 current_time = datetime.fromtimestamp(ticker['timestamp'] / 1000.0)
                 price = ticker['last']
                 
-                # 构建伪 K 线或仅更新收盘价
-                # Backtrader 期望 K 线数据。
-                # 如果我们要 Tick 数据，可以传递它。但我们继承了 PandasData (OHLCV)。
-                # 我们可以推送一个 O=H=L=C=Price 的 K 线。
+                # --- Redis 实时推送 (Polling) ---
+                if self.p.instance_id:
+                    candle = {
+                        'time': int(ticker['timestamp'] / 1000),
+                        'open': price,
+                        'high': price,
+                        'low': price,
+                        'close': price,
+                        'volume': ticker.get('baseVolume', 0),
+                        'symbol': self.p.symbol,
+                        'is_closed': False
+                    }
+                    redis_client.publish_market_data(self.p.instance_id, candle)
+                # --------------------------------
                 
+                # 构建伪 K 线或仅更新收盘价
                 line = (
                     current_time,
                     price,

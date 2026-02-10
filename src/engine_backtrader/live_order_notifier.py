@@ -103,7 +103,13 @@ class LiveOrderNotifier(OrderStateNotifier):
         import websocket
         import ssl
 
-        url = f"wss://fstream.binance.com/ws/{self.listen_key}"
+        # 确定 WebSocket URL
+        if getattr(self.broker.store, 'testnet', False):
+            base_url = "wss://stream.binancefuture.com/ws"
+        else:
+            base_url = "wss://fstream.binance.com/ws"
+
+        url = f"{base_url}/{self.listen_key}"
 
         def on_message(ws, message):
             self._on_message(ws, message)
@@ -140,7 +146,7 @@ class LiveOrderNotifier(OrderStateNotifier):
                 try:
                     self.listen_key = self._create_listen_key()
                     # Update URL with new listen key
-                    self.ws.url = f"wss://fstream.binance.com/ws/{self.listen_key}"
+                    self.ws.url = f"{base_url}/{self.listen_key}"
                 except:
                     pass
 

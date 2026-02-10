@@ -8,142 +8,52 @@ from .db_models import MarketData
 def load_kline_data(symbol, start_ts=None, end_ts=None, limit=10000, timeframe=None):
     """
     加载指定标的的 K 线数据，支持时间范围筛选
-    优先尝试从数据库加载，如果失败或数据不足，则回退到 CSV 文件
-    
-    :param symbol: 交易对 (e.g. BTC/USDT)
-    :param start_ts: 开始时间戳 (秒)
-    :param end_ts: 结束时间戳 (秒)
-    :param limit: 默认限制条数
-    :param timeframe: K线周期 (e.g., '1m', '1h', '1d')
+    逻辑：从 PostgreSQL 数据库加载
     """
-    
-    # --- 1. 尝试从数据库加载 ---
+    df_db = pd.DataFrame()
+
+    # --- 从数据库加载 ---
     try:
         session = db_manager.get_session()
         query = session.query(MarketData).filter(MarketData.symbol == symbol)
-        
         if timeframe:
             query = query.filter(MarketData.timeframe == timeframe)
-            
         if start_ts:
-            start_dt = pd.to_datetime(start_ts, unit='s')
-            query = query.filter(MarketData.timestamp >= start_dt)
-            
+            query = query.filter(MarketData.timestamp >= pd.to_datetime(start_ts, unit='s'))
         if end_ts:
-            end_dt = pd.to_datetime(end_ts, unit='s')
-            query = query.filter(MarketData.timestamp <= end_dt)
+            query = query.filter(MarketData.timestamp <= pd.to_datetime(end_ts, unit='s'))
             
-        # 排序和限制
-        query = query.order_by(MarketData.timestamp.asc())
-        
-        # 如果没有指定时间范围，只取最后 limit 条
-        if not start_ts and not end_ts:
-            # SQL 优化: 先倒序取 limit，再正序
-            # 注意: SQLite/PG 语法可能略有差异，这里使用 Python 切片或子查询
-            # 简单起见，直接查询
-            count = query.count()
-            if count > limit:
-                query = query.offset(count - limit)
-        
-        # 执行查询
-        # 使用 pandas.read_sql 会更方便，但这里我们有 session
-        # 手动转换
-        results = query.all()
+        results = query.order_by(MarketData.timestamp.asc()).all()
         session.close()
         
         if results:
-            data = [{
+            db_list = [{
                 'time': int(r.timestamp.timestamp()),
-                'open': r.open,
-                'high': r.high,
-                'low': r.low,
-                'close': r.close,
-                'volume': r.volume
+                'open': r.open, 'high': r.high, 'low': r.low, 'close': r.close, 'volume': r.volume
             } for r in results]
-            
-            df = pd.DataFrame(data)
-            return df
-            
+            df_db = pd.DataFrame(db_list)
     except Exception as e:
-        # print(f"DB Load Error: {e}") # 调试用
-        pass # Fallback to CSV
+        print(f"Error loading data from DB: {e}")
+        pass
 
-    # --- 2. 回退到 CSV 加载 (原有逻辑) ---
-    # src/utils/data_helper.py -> src/utils -> src -> binance_bot
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    data_dir = os.path.join(root_dir, 'data')
-    safe_symbol = symbol.replace('/', '')
-    
-    # 构造文件匹配模式
-    if timeframe:
-        # 精确匹配周期: BTCUSDT_1d_*.csv
-        pattern = os.path.join(data_dir, f"{safe_symbol}_{timeframe}_*.csv")
-    else:
-        # 模糊匹配 (可能会匹配到错误的周期，如 1m 代替 1d)
-        pattern = os.path.join(data_dir, f"{safe_symbol}_*_*.csv")
-        
-    files = glob.glob(pattern)
-    
-    if not files:
-        # 如果指定了周期但没找到，尝试降级到模糊搜索 (仅作为 fallback)
-        if timeframe:
-             pattern = os.path.join(data_dir, f"{safe_symbol}_*_*.csv")
-             files = glob.glob(pattern)
-             if not files:
-                 return pd.DataFrame()
-        else:
-            return pd.DataFrame()
-        
-    # 策略：如果指定了 start_ts/end_ts，我们尝试找到覆盖该范围的文件
-    # 但由于文件名只包含大致时间，且我们可能需要加载多个文件拼接 (暂不支持拼接)
-    # 目前逻辑：优先取最新的文件 (通常是最新的数据)
-    # 改进：如果文件列表中有明显包含目标时间段的文件，应该优先选它
-    # (这需要解析文件名中的时间段，暂且先保持取最新，但依靠 timeframe 过滤应该能解决大部分问题)
-    
-    # 按照修改时间排序，取最新的
-    files.sort(key=os.path.getmtime, reverse=True)
-    latest_file = files[0]
-    
-    # 如果有多个文件，尝试找到包含 start_ts 的文件 (简单启发式)
-    # 比如文件名包含 YYYYMMDD
-    # 但最可靠的还是读取文件头尾 (但这会比较慢)
-    # 考虑到我们通常只有一个最新的完整文件，或者按时间分割的文件
-    # 如果最新的文件时间太早，可能不包含我们需要的数据
-    
-    try:
-        # 尝试读取最新的文件
-        df = pd.read_csv(latest_file)
-        # 兼容不同的列名
-        if 'datetime' in df.columns:
-            df['time'] = pd.to_datetime(df['datetime'])
-        elif 'timestamp' in df.columns: # Binance API raw data
-             df['time'] = pd.to_datetime(df['timestamp'], unit='ms')
-             
-        # 转换为 Unix Timestamp (seconds)
-        df['time'] = df['time'].astype('int64') // 10**9 
-        
-        # 筛选所需列
-        required_cols = ['time', 'open', 'high', 'low', 'close']
-        if all(col in df.columns for col in required_cols):
-             df = df[required_cols]
-             
-             # 如果指定了时间范围，进行筛选
-             if start_ts is not None or end_ts is not None:
-                 if start_ts:
-                     df = df[df['time'] >= start_ts]
-                 if end_ts:
-                     df = df[df['time'] <= end_ts]
-                 
-                 # 如果筛选后有数据，直接返回
-                 if not df.empty:
-                     return df
-             
-             # 如果没有指定时间，或者筛选后为空（fallback），返回最后 limit 条
-             return df.tail(limit)
-             
+    if df_db.empty:
         return pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+        
+    df = df_db.drop_duplicates(subset=['time'], keep='last')
+    df = df.sort_values('time')
+
+    # --- 筛选时间范围和限制 ---
+    if start_ts:
+        df = df[df['time'] >= start_ts]
+    if end_ts:
+        df = df[df['time'] <= end_ts]
+
+    # Handle NaN values globally for the DataFrame
+    # Lightweight Charts does not support NaN in JSON
+    # We replace NaN with None (which becomes null in JSON)
+    df = df.where(pd.notnull(df), None)
+        
+    return df.tail(limit)
 
 def calculate_indicators(df, strategy_name, config_json):
     """
@@ -171,14 +81,18 @@ def calculate_indicators(df, strategy_name, config_json):
         df['sma_fast'] = df['close'].rolling(window=fast_period).mean()
         df['sma_slow'] = df['close'].rolling(window=slow_period).mean()
         
+        # Replace NaN with None for chart data
+        sma_fast_data = df[['time', 'sma_fast']].rename(columns={'sma_fast': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        sma_slow_data = df[['time', 'sma_slow']].rename(columns={'sma_slow': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+
         main_overlays.append({
             "type": 'Line',
-            "data": df[['time', 'sma_fast']].rename(columns={'sma_fast': 'value'}).dropna().to_dict('records'),
+            "data": sma_fast_data,
             "options": {"color": '#2962FF', "lineWidth": 2, "title": f"SMA {fast_period}"}
         })
         main_overlays.append({
             "type": 'Line',
-            "data": df[['time', 'sma_slow']].rename(columns={'sma_slow': 'value'}).dropna().to_dict('records'),
+            "data": sma_slow_data,
             "options": {"color": '#FF6D00', "lineWidth": 2, "title": f"SMA {slow_period}"}
         })
 
@@ -192,9 +106,13 @@ def calculate_indicators(df, strategy_name, config_json):
         df['upper'] = df['sma'] + (df['std'] * dev)
         df['lower'] = df['sma'] - (df['std'] * dev)
         
-        main_overlays.append({"type": 'Line', "data": df[['time', 'upper']].rename(columns={'upper': 'value'}).dropna().to_dict('records'), "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Upper"}})
-        main_overlays.append({"type": 'Line', "data": df[['time', 'lower']].rename(columns={'lower': 'value'}).dropna().to_dict('records'), "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Lower"}})
-        main_overlays.append({"type": 'Line', "data": df[['time', 'sma']].rename(columns={'sma': 'value'}).dropna().to_dict('records'), "options": {"color": 'rgba(128, 128, 128, 0.5)', "lineWidth": 1, "lineStyle": 2, "title": "Mid"}})
+        upper_data = df[['time', 'upper']].rename(columns={'upper': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        lower_data = df[['time', 'lower']].rename(columns={'lower': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        mid_data = df[['time', 'sma']].rename(columns={'sma': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+
+        main_overlays.append({"type": 'Line', "data": upper_data, "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Upper"}})
+        main_overlays.append({"type": 'Line', "data": lower_data, "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Lower"}})
+        main_overlays.append({"type": 'Line', "data": mid_data, "options": {"color": 'rgba(128, 128, 128, 0.5)', "lineWidth": 1, "lineStyle": 2, "title": "Mid"}})
 
     # Dual Thrust
     elif 'DualThrust' in strategy_name:
@@ -218,8 +136,11 @@ def calculate_indicators(df, strategy_name, config_json):
         df['buy_line'] = df['open'] + k1 * df['range']
         df['sell_line'] = df['open'] - k2 * df['range']
         
-        main_overlays.append({"type": 'Line', "data": df[['time', 'buy_line']].rename(columns={'buy_line': 'value'}).dropna().to_dict('records'), "options": {"color": 'green', "lineWidth": 1, "title": "Buy Line"}})
-        main_overlays.append({"type": 'Line', "data": df[['time', 'sell_line']].rename(columns={'sell_line': 'value'}).dropna().to_dict('records'), "options": {"color": 'red', "lineWidth": 1, "title": "Sell Line"}})
+        buy_data = df[['time', 'buy_line']].rename(columns={'buy_line': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        sell_data = df[['time', 'sell_line']].rename(columns={'sell_line': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+
+        main_overlays.append({"type": 'Line', "data": buy_data, "options": {"color": 'green', "lineWidth": 1, "title": "Buy Line"}})
+        main_overlays.append({"type": 'Line', "data": sell_data, "options": {"color": 'red', "lineWidth": 1, "title": "Sell Line"}})
 
     # MACD (副图)
     elif 'MACD' in strategy_name:
@@ -237,9 +158,9 @@ def calculate_indicators(df, strategy_name, config_json):
         
         # 构建副图 Series
         # 注意：数据需要过滤 NaN，否则 LightWeightCharts 可能渲染失败
-        macd_data = df[['time', 'macd']].rename(columns={'macd': 'value'}).dropna().to_dict('records')
-        diff_data = df[['time', 'diff']].rename(columns={'diff': 'value'}).dropna().to_dict('records')
-        dea_data = df[['time', 'dea']].rename(columns={'dea': 'value'}).dropna().to_dict('records')
+        macd_data = df[['time', 'macd']].rename(columns={'macd': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        diff_data = df[['time', 'diff']].rename(columns={'diff': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        dea_data = df[['time', 'dea']].rename(columns={'dea': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
         
         if not macd_data: # 如果计算结果为空 (e.g. 数据不够长)
              return [], []

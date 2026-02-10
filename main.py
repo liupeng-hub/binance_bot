@@ -26,7 +26,8 @@ def cli():
 @click.option('--timeframe', default='1h', type=click.Choice(['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d']), help='K线周期')
 @click.option('--params', default='{}', help='策略参数 (JSON 字符串)')
 @click.option('--no-ws', is_flag=True, help='禁用 WebSocket (使用 HTTP 轮询)')
-def trade(strategy, symbol, mode, days, timeframe, params, no_ws):
+@click.option('--testnet', is_flag=True, default=True, help='使用测试网 (默认为 True)')
+def trade(strategy, symbol, mode, days, timeframe, params, no_ws, testnet):
     """运行交易机器人 (实盘或模拟)"""
     from src.engine_backtrader.bt_binance_store import BinanceStore
     from src.utils.strategy_loader import StrategyLoader
@@ -70,7 +71,9 @@ def trade(strategy, symbol, mode, days, timeframe, params, no_ws):
     click.echo(f"   🛠️  策略参数: {json.dumps(effective_params, indent=2)}")
 
     # 初始化 Store
-    store = BinanceStore(env_file='.env', testnet=(mode=='sim'))
+    # 如果 mode 为 sim，强制使用 testnet=True
+    is_testnet = testnet or (mode == 'sim')
+    store = BinanceStore(env_file='.env', testnet=is_testnet)
     
     # 1. 创建基础 Broker
     if mode == 'live':
@@ -117,19 +120,15 @@ def trade(strategy, symbol, mode, days, timeframe, params, no_ws):
 
     # 添加数据
     use_websocket = not no_ws
-    # 转换 timeframe 字符串为 Backtrader 常量
-    tf_map = {
-        '1m': bt.TimeFrame.Minutes, '3m': bt.TimeFrame.Minutes, '5m': bt.TimeFrame.Minutes, 
-        '15m': bt.TimeFrame.Minutes, '30m': bt.TimeFrame.Minutes,
-        '1h': bt.TimeFrame.Minutes, '2h': bt.TimeFrame.Minutes, '4h': bt.TimeFrame.Minutes, 
-        '6h': bt.TimeFrame.Minutes, '8h': bt.TimeFrame.Minutes, '12h': bt.TimeFrame.Minutes,
-        '1d': bt.TimeFrame.Days
-    }
-    # 对于分钟级数据，compression 需要相应调整 (例如 1h = 60m)
-    # 简化起见，这里先统一传给 Store 处理，或者假设 Store 返回标准 BT Data
-    # 注意：BinanceStore.get_data 目前可能需要 timeframe 字符串
+    is_live = (mode == 'live')
     
-    data = store.get_data(symbol=symbol, days=days, timeframe=timeframe, use_websocket=use_websocket)
+    data = store.get_data(
+        symbol=symbol, 
+        days=days, 
+        timeframe=timeframe, 
+        use_websocket=use_websocket,
+        _realtime=is_live
+    )
     cerebro.adddata(data, name=symbol)
         
     # 添加策略

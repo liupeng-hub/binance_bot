@@ -4,40 +4,73 @@ import pandas as pd
 import time
 import traceback
 from datetime import datetime, timedelta
+from sqlalchemy import func
+from .db_manager import db_manager
+from .db_models import MarketData
+from sqlalchemy.dialects.postgresql import insert
 
 def fetch_binance_history(symbol="BTCUSDT", timeframe="1m", days=365):
     """
-    获取币安合约历史K线 (优先读取本地缓存)
+    获取币安合约历史K线 (优先读取 PostgreSQL 数据库)
     """
-    safe_symbol = symbol.replace("/", "")
-    # 数据目录在 core 上一级的 data 目录 (已修正为项目根目录下的 data)
-    # src/utils/data_provider.py -> src/utils -> src -> binance_bot
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    data_dir = os.path.join(root_dir, "data")
-    os.makedirs(data_dir, exist_ok=True)
-    
-    # 预期时间范围
-    end_time_dt = datetime.now()
+    # 1. 尝试从数据库加载
+    end_time_dt = datetime.utcnow()
     start_time_dt = end_time_dt - timedelta(days=days)
     
-    existing_file = None
-    for f in os.listdir(data_dir):
-        if f.startswith(f"{safe_symbol}_{timeframe}_") and f.endswith(".csv"):
-            existing_file = os.path.join(data_dir, f)
-            break
-            
-    if existing_file:
-        print(f"发现本地缓存数据: {existing_file}")
-        print("正在读取本地数据...")
-        df = pd.read_csv(existing_file)
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        # 简单校验一下数据长度是否足够 (粗略)
-        if len(df) > 0:
-            print(f"本地数据读取成功。条数: {len(df)}")
-            return df
-        else:
-            print("本地数据为空，重新下载。")
+    print(f"正在检查数据库中的历史数据: {symbol} {timeframe} ({days} days)...")
     
+    session = db_manager.get_session()
+    try:
+        # 查询数据库中的数据范围
+        # 注意: 这种检查比较粗略，假设数据是连续的
+        min_ts = session.query(func.min(MarketData.timestamp)).filter(
+            MarketData.symbol == symbol,
+            MarketData.timeframe == timeframe
+        ).scalar()
+        
+        max_ts = session.query(func.max(MarketData.timestamp)).filter(
+            MarketData.symbol == symbol,
+            MarketData.timeframe == timeframe
+        ).scalar()
+        
+        # 检查是否覆盖了请求的范围
+        # 允许 1 天的容差 (对于 Start) 和 1 小时的容差 (对于 End)
+        coverage_ok = False
+        if min_ts and max_ts:
+            db_start_ok = min_ts <= start_time_dt + timedelta(days=1)
+            db_end_ok = max_ts >= end_time_dt - timedelta(hours=1)
+            
+            if db_start_ok and db_end_ok:
+                print(f"✅ 数据库中已存在足够的数据 ({min_ts} ~ {max_ts})。直接读取...")
+                
+                # 读取数据
+                query = session.query(MarketData).filter(
+                    MarketData.symbol == symbol,
+                    MarketData.timeframe == timeframe,
+                    MarketData.timestamp >= start_time_dt
+                ).order_by(MarketData.timestamp.asc())
+                
+                results = query.all()
+                if results:
+                    data = [{
+                        'datetime': r.timestamp,
+                        'open': r.open, 'high': r.high, 'low': r.low, 'close': r.close, 'volume': r.volume
+                    } for r in results]
+                    df = pd.DataFrame(data)
+                    df.set_index('datetime', inplace=True)
+                    print(f"从数据库读取了 {len(df)} 条记录。")
+                    return df
+            else:
+                print(f"⚠️ 数据库数据不完整 (DB: {min_ts}~{max_ts} vs Req: {start_time_dt}~{end_time_dt})。准备下载...")
+        else:
+            print("⚠️ 数据库中无此标的数据。准备下载...")
+            
+    except Exception as e:
+        print(f"查询数据库失败: {e}")
+    finally:
+        session.close()
+
+    # 2. 如果数据库数据不足，下载数据
     print(f"正在从币安获取 {symbol} {timeframe} 历史数据 (过去 {days} 天)...")
     
     # 尝试配置本地代理，解决连接问题
@@ -116,13 +149,56 @@ def fetch_binance_history(symbol="BTCUSDT", timeframe="1m", days=365):
     df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     
-    # === 保存数据到 CSV ===
-    start_str = df['datetime'].min().strftime("%Y%m%d")
-    end_str = df['datetime'].max().strftime("%Y%m%d")
-    filename = f"{safe_symbol}_{timeframe}_{start_str}_{end_str}.csv"
-    file_path = os.path.join(data_dir, filename)
+    # === 3. 保存数据到 PostgreSQL ===
+    print("正在保存数据到数据库...")
+    session = db_manager.get_session()
+    try:
+        # 批量插入/更新
+        # 为了效率，我们使用 bulk_save_objects 或者 execute(insert)
+        # 考虑到可能存在重复，我们需要 UPSERT
+        
+        objects = []
+        for _, row in df.iterrows():
+            objects.append({
+                'timestamp': row['datetime'],
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'open': row['open'],
+                'high': row['high'],
+                'low': row['low'],
+                'close': row['close'],
+                'volume': row['volume']
+            })
+            
+        if objects:
+            # 分批处理以避免内存溢出
+            batch_size = 5000
+            for i in range(0, len(objects), batch_size):
+                batch = objects[i:i+batch_size]
+                
+                # 使用 PostgreSQL 的 ON CONFLICT 语法
+                stmt = insert(MarketData).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['timestamp', 'symbol', 'timeframe'],
+                    set_={
+                        'open': stmt.excluded.open,
+                        'high': stmt.excluded.high,
+                        'low': stmt.excluded.low,
+                        'close': stmt.excluded.close,
+                        'volume': stmt.excluded.volume
+                    }
+                )
+                session.execute(stmt)
+                session.commit()
+                print(f"  已保存 {min(i+batch_size, len(objects))}/{len(objects)} 条...")
+                
+        print("✅ 数据保存完成。")
+        
+    except Exception as e:
+        print(f"❌ 保存数据到数据库失败: {e}")
+        session.rollback()
+    finally:
+        session.close()
     
-    df.to_csv(file_path, index=False)
-    print(f"数据已保存至: {file_path}")
-    
+    df.set_index('datetime', inplace=True)
     return df

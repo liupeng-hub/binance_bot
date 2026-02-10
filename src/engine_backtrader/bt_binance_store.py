@@ -16,6 +16,7 @@ class BinanceStore:
 
         self.api_key = api_key or os.getenv("BINANCE_API_KEY")
         self.secret_key = secret_key or os.getenv("BINANCE_SECRET_KEY")
+        self.testnet = testnet
 
         # CCXT 配置
         self.exchange_config = {
@@ -31,8 +32,10 @@ class BinanceStore:
             self.exchange_config['options']['defaultType'] = 'future'
             self.exchange = ccxt.binanceusdm(self.exchange_config)
             self.exchange.set_sandbox_mode(True)
+            print(f"📡 [Store] 已切换至币安测试网 (SandBox Mode)")
         else:
             self.exchange = ccxt.binanceusdm(self.exchange_config)
+            print(f"📡 [Store] 已连接至币安正式网")
 
         self._broker = None
         self._data = None
@@ -51,7 +54,7 @@ class BinanceStore:
             self._user_stream.start()
         return self._user_stream
 
-    def get_data(self, symbol='BTC/USDT', timeframe='1m', days=30, use_websocket=True, **kwargs):
+    def get_data(self, symbol='BTC/USDT', timeframe='1m', days=30, use_websocket=True, instance_id=None, **kwargs):
         """
         工厂方法：创建 BinanceData 数据源。
         在此处预加载历史数据并传递给 Data Feed。
@@ -81,7 +84,7 @@ class BinanceStore:
 
         return BinanceData(dataname=df, store=self, symbol=symbol, 
                            binance_timeframe=timeframe, days=days, 
-                           use_websocket=use_websocket, **kwargs)
+                           use_websocket=use_websocket, instance_id=instance_id, **kwargs)
 
     def get_broker(self, **kwargs):
         """

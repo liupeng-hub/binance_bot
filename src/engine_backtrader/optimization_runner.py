@@ -19,6 +19,10 @@ project_root = os.path.dirname(os.path.dirname(current_dir))
 # 将项目根目录加入 path，以便可以使用 from src.utils import ...
 sys.path.append(project_root)
 
+# Optimize DB connection for single runner process
+os.environ['DB_POOL_SIZE'] = '1'
+os.environ['DB_MAX_OVERFLOW'] = '5'
+
 from src.utils.db_manager import db_manager
 from src.utils.db_models import OptimizationJob, User, ExchangeConfig
 from src.engine_backtrader.bt_binance_store import BinanceStore

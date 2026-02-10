@@ -1,16 +1,17 @@
 import backtrader as bt
-from src.utils.db_models import TradeRecord, EquityRecord, SignalRecord, StrategyInstance
+from src.utils.db_models import TradeRecord, EquityRecord, SignalRecord, StrategyInstance, MarketData
 from src.utils.db_manager import db_manager
 from datetime import datetime
 import json
 
 class SQLiteAnalyzer(bt.Analyzer):
     """
-    实时将交易和净值记录写入 SQLite 数据库
+    实时将交易、净值和市场数据写入 SQLite 数据库
     """
     params = (
         ('user_id', None),
         ('instance_id', None),
+        ('mode', 'backtest'), # 新增 mode 参数
     )
 
     def __init__(self):
@@ -19,6 +20,7 @@ class SQLiteAnalyzer(bt.Analyzer):
         self.strategy_name = "Unknown"
         self.user_id = self.p.user_id
         self.instance_id = self.p.instance_id
+        self.last_kline_time = None # 记录上一次保存 K 线的时间
 
     def start(self):
         self.strategy_name = self.strategy.__class__.__name__
@@ -102,20 +104,92 @@ class SQLiteAnalyzer(bt.Analyzer):
 
     def next(self):
         # 记录每日/每Bar净值 (频率可控，例如每天记录一次)
-        # 这里为了演示，每个 Bar 都记录可能会太多，建议仅在实盘或特定时间记录
-        # 模拟盘建议只在一天结束时记录
-        
-        # 简单的频率控制：如果是实盘，或者每天收盘时
         current_dt = self.strategy.datetime.datetime()
         
+        # 1. 实时保存 K 线数据到 MarketData 表 (仅保存已完成的 Bar)
+        # 这样 Web UI 就能通过 load_kline_data 看到最新的线
+        self._record_kline(current_dt)
+
+        # 2. 净值记录
         # 仅记录 Equity，这里不做太高频的写入以免影响性能
-        # 示例：每小时记录一次，或者每天
-        if len(self.strategy) % 60 == 0: # 假设 1m K线，每小时记录一次
+        # 示例：每小时记录一次，或者每 60 个 Bar
+        if len(self.strategy) % 60 == 0: 
              self._record_equity(current_dt)
              
-        # 更新进度 (每 100 个 Bar 更新一次，避免频繁写库)
+        # 3. 更新进度 (仅回测模式)
         if len(self.strategy) % 100 == 0:
             self._update_progress()
+
+    def _record_kline(self, dt):
+        """将当前 Bar 数据持久化到数据库，供 Web UI 实时显示"""
+        try:
+            # 1. 模式检查：回测模式不记录 K 线到数据库 (节省 IO)
+            if self.p.mode != 'live':
+                return
+
+            # 2. 避免同一时间戳的重复处理（如果是同一秒的数据且价格没变，则跳过）
+            # 注意：在实盘模式下，我们允许覆盖同一分钟的 Bar 以更新最新价格
+            data = self.datas[0]
+            
+            # 如果是回测，last_kline_time 检查很有用
+            # 如果是实盘，我们希望每一跳都更新 DB
+            # 但为了性能，如果价格没变，也可以跳过
+            # 这里简化为：实盘模式总是尝试更新 (SQLAlchemy merge 会处理)
+            symbol = data._name
+            # 尝试获取 timeframe 字符串 (e.g., '1m')
+            # BinanceData 中存储了 binance_timeframe
+            timeframe = getattr(data.p, 'binance_timeframe', '1m')
+            
+            # 检查是否已存在 (避免主键冲突)
+            # 在高性能场景下可以先存入缓存或批量写入
+            # 这里先简单实现：直接插入或忽略
+            
+            # 使用原生 SQL 以提高性能 (INSERT OR IGNORE)
+            # 或者先查询
+            # 为了兼容多种数据库，这里使用 SQLAlchemy 的逻辑
+            
+            k_record = MarketData(
+                timestamp=dt,
+                symbol=symbol,
+                timeframe=timeframe,
+                open=data.open[0],
+                high=data.high[0],
+                low=data.low[0],
+                close=data.close[0],
+                volume=data.volume[0]
+            )
+            
+            # 注意：SQLite 的处理。如果主键重复会报错。
+            # 我们先 commit 之前的，再处理这个。
+            try:
+                self.session.merge(k_record) # merge 会根据主键更新或插入
+                self.session.commit()
+                self.last_kline_time = dt
+                # 打印持久化调试信息
+                print(f"💾 [DB] 已保存 K线: {symbol} ({timeframe}) | 时间: {dt} | 收盘: {k_record.close}")
+            except Exception as e:
+                print(f"❌ [DB] 保存 K线失败: {e}")
+                self.session.rollback()
+        except Exception:
+            pass
+
+    def record_signal(self, signal_type, price, comment=""):
+        """手动记录策略信号"""
+        try:
+            sig = SignalRecord(
+                user_id=self.user_id,
+                instance_id=self.instance_id,
+                timestamp=self.strategy.datetime.datetime(),
+                symbol=self.datas[0]._name,
+                signal_type=signal_type,
+                price=price,
+                comment=comment
+            )
+            self.session.add(sig)
+            self.session.commit()
+        except Exception:
+            pass
+
 
     def _update_progress(self):
         try:

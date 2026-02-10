@@ -4,11 +4,15 @@ from cryptography.fernet import Fernet
 import os
 import hashlib
 import json
+from dotenv import load_dotenv
 from .db_models import Base, User
 
 class DBManager:
     def __init__(self, db_url=None):
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        # 加载 .env 文件
+        load_dotenv(os.path.join(root_dir, '.env'))
         
         # 优先从环境变量读取数据库连接串
         # e.g. postgresql://user:pass@localhost:5432/mydb
@@ -40,8 +44,19 @@ class DBManager:
         connect_args = {}
         if self.db_url.startswith('sqlite'):
             connect_args = {'check_same_thread': False}
+            self.engine = create_engine(self.db_url, echo=False, connect_args=connect_args)
+        else:
+            # PostgreSQL 等远程数据库的连接优化
+            self.engine = create_engine(
+                self.db_url,
+                echo=False,
+                connect_args=connect_args,
+                pool_pre_ping=True,      # 关键：每次取连接前先探测，防止超时断开
+                pool_recycle=3600,       # 每小时回收一次连接
+                pool_size=int(os.environ.get('DB_POOL_SIZE', 5)),      # 连接池大小 (默认降低到 5)
+                max_overflow=int(os.environ.get('DB_MAX_OVERFLOW', 10)) # 允许临时溢出的最大连接数
+            )
             
-        self.engine = create_engine(self.db_url, echo=False, connect_args=connect_args)
         self.Session = sessionmaker(bind=self.engine)
         
     def init_db(self):
@@ -58,10 +73,11 @@ class DBManager:
     def _init_timescaledb(self):
         """尝试初始化 TimescaleDB (如果可用)"""
         try:
+            from sqlalchemy import text
             with self.engine.connect() as conn:
                 # 启用扩展 (需要 superuser 权限，如果失败则忽略)
                 try:
-                    conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
                     conn.commit()
                     print("✅ TimescaleDB extension enabled.")
                 except Exception as e:
@@ -74,7 +90,7 @@ class DBManager:
                 try:
                     # 检查是否已经是超表
                     # 注意: 这里的 SQL 语法是针对 PG/Timescale 的
-                    conn.execute("SELECT create_hypertable('market_data', 'timestamp', if_not_exists => TRUE);")
+                    conn.execute(text("SELECT create_hypertable('market_data', 'timestamp', if_not_exists => TRUE);"))
                     conn.commit()
                     print("✅ MarketData converted to Hypertable.")
                 except Exception as e:
@@ -84,6 +100,23 @@ class DBManager:
         
     def get_session(self):
         return self.Session()
+
+    def execute_with_retry(self, func, max_retries=3):
+        """执行数据库操作的重试逻辑"""
+        last_exception = None
+        for attempt in range(max_retries):
+            session = self.get_session()
+            try:
+                return func(session)
+            except Exception as e:
+                last_exception = e
+                session.rollback()
+                print(f"⚠️ Database operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+                import time
+                time.sleep(1) # 等待 1 秒后重试
+            finally:
+                session.close()
+        raise last_exception
     
     def create_admin_if_not_exists(self):
         session = self.Session()

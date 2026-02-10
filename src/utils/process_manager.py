@@ -5,6 +5,7 @@ import signal
 import psutil
 from .db_manager import db_manager
 from .db_models import StrategyInstance, TradeRecord, EquityRecord, SignalRecord
+from .redis_client import redis_client
 from datetime import datetime
 
 class ProcessManager:
@@ -98,6 +99,9 @@ class ProcessManager:
             instance.log_path = log_file 
             session.commit()
             
+            # Redis 推送
+            redis_client.publish_status(instance_id, {'status': 'RUNNING', 'pid': process.pid, 'log_path': log_file})
+            
             return True, f"Started with PID {process.pid}"
             
         except Exception as e:
@@ -132,6 +136,10 @@ class ProcessManager:
         instance.status = 'STOPPED'
         instance.pid = None
         session.commit()
+        
+        # Redis 推送
+        redis_client.publish_status(instance_id, {'status': 'STOPPED', 'pid': None})
+        
         session.close()
         
         return True, "Stopped"
@@ -140,22 +148,29 @@ class ProcessManager:
         """
         启动优化任务 (异步进程)
         """
-        script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engine_backtrader', 'optimization_runner.py')
+        # 修正路径: src/utils/process_manager.py -> src -> engine_backtrader -> optimization_runner.py
+        # root_dir is binance_bot
+        script_path = os.path.join(self.root_dir, 'src', 'engine_backtrader', 'optimization_runner.py')
+        
+        # 准备日志
+        log_dir = os.path.join(self.root_dir, 'logs', 'optimization')
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"opt_{job_id}.log")
         
         # 构建命令
-        cmd = [sys.executable, script_path, '--job_id', str(job_id)]
+        cmd = [sys.executable, '-u', script_path, '--job_id', str(job_id)]
         
         try:
-            # 启动子进程
-            process = subprocess.Popen(
-                cmd,
-                cwd=os.path.dirname(script_path), # Working dir
-                stdout=subprocess.PIPE, # 这里可以重定向到日志文件
-                stderr=subprocess.PIPE
-            )
+            with open(log_file, 'w') as f:
+                # 启动子进程
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=self.root_dir, # Use project root as cwd
+                    stdout=f, 
+                    stderr=subprocess.STDOUT
+                )
             
             # 记录 PID
-            # 注意：optimization_runner 也会自己更新 DB，但这里先拿个 PID 比较保险
             return True, process.pid
             
         except Exception as e:

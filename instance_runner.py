@@ -10,14 +10,33 @@ import signal
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, 'src'))
 
+# Optimize DB connection for single instance process
+os.environ['DB_POOL_SIZE'] = '1'
+os.environ['DB_MAX_OVERFLOW'] = '5'
+
 from src.utils.db_manager import db_manager
 from src.utils.db_models import StrategyInstance, ExchangeConfig, User, BacktestResult
+from src.utils.redis_client import redis_client
 from src.engine_backtrader.bt_binance_store import BinanceStore
 from src.engine_backtrader.bt_db_analyzer import SQLiteAnalyzer
+from src.engine_backtrader.bt_redis_analyzer import RedisMarketFeed
 from src.utils.strategy_loader import StrategyLoader
 
 # 全局变量用于信号处理
 instance_id_global = None
+
+class RedisLogStream:
+    def __init__(self, instance_id, original_stream):
+        self.instance_id = instance_id
+        self.original_stream = original_stream
+
+    def write(self, message):
+        self.original_stream.write(message)
+        if message.strip():
+            redis_client.publish_log(self.instance_id, message.strip())
+
+    def flush(self):
+        self.original_stream.flush()
 
 def handle_exit(signum, frame):
     print(f"\nReceived signal {signum}, exiting...")
@@ -28,6 +47,8 @@ def handle_exit(signum, frame):
             instance.status = 'STOPPED'
             instance.pid = None
             session.commit()
+            # Redis 推送
+            redis_client.publish_status(instance_id_global, {'status': 'STOPPED', 'pid': None})
         session.close()
     sys.exit(0)
 
@@ -41,6 +62,10 @@ def main():
     parser.add_argument('--instance_id', required=True, help='Strategy Instance ID')
     args = parser.parse_args()
     instance_id_global = args.instance_id
+    
+    # 启用 Redis 日志推送
+    sys.stdout = RedisLogStream(args.instance_id, sys.stdout)
+    sys.stderr = RedisLogStream(args.instance_id, sys.stderr)
     
     # 获取实例配置
     session = db_manager.get_session()
@@ -88,12 +113,64 @@ def main():
     days = sys_config.get('days', 30)
     capital = float(sys_config.get('capital', 1000000.0))
     
+    # 环境标识
+    testnet = sys_config.get('testnet', True)
+    env_str = "🧪 测试网 (Futures Testnet)" if testnet else "💰 正式网 (REAL MONEY)"
+
     # 获取用户 API Key
     user_config = session.query(ExchangeConfig).filter_by(user_id=user_id).first()
-    api_key = db_manager.decrypt_secret(user_config.api_key_enc) if user_config else None
-    secret_key = db_manager.decrypt_secret(user_config.secret_key_enc) if user_config else None
     
+    api_key = None
+    secret_key = None
+    
+    if user_config:
+        if testnet:
+            # 优先使用 DB 中的 Testnet Key
+            if user_config.testnet_api_key_enc:
+                api_key = db_manager.decrypt_secret(user_config.testnet_api_key_enc)
+                secret_key = db_manager.decrypt_secret(user_config.testnet_secret_key_enc)
+            
+            # Fallback to Env if DB is empty
+            if not api_key:
+                api_key = os.environ.get('BINANCE_TESTNET_API_KEY')
+                secret_key = os.environ.get('BINANCE_TESTNET_SECRET_KEY')
+        else:
+            # 实盘模式使用 Real Key
+            if user_config.api_key_enc:
+                api_key = db_manager.decrypt_secret(user_config.api_key_enc)
+                secret_key = db_manager.decrypt_secret(user_config.secret_key_enc)
+                
+            # Fallback to Env if DB is empty
+            if not api_key:
+                api_key = os.environ.get('BINANCE_API_KEY')
+                secret_key = os.environ.get('BINANCE_SECRET_KEY')
+    
+    # 如果还是没有 Key (且是实盘或测试网需要鉴权)，则尝试从 Env 读取 (针对没有 user_config 的情况)
+    if not api_key:
+        if testnet:
+             api_key = os.environ.get('BINANCE_TESTNET_API_KEY')
+             secret_key = os.environ.get('BINANCE_TESTNET_SECRET_KEY')
+        else:
+             api_key = os.environ.get('BINANCE_API_KEY')
+             secret_key = os.environ.get('BINANCE_SECRET_KEY')
+
     session.close() 
+
+    # --- 调试信息打印 ---
+    print("="*50)
+    print(f"🛠️  [DEBUG] 实例启动调试信息:")
+    print(f"   - 实例 ID: {args.instance_id}")
+    print(f"   - 运行模式: {mode.upper()}")
+    
+    print(f"   - 运行环境: {env_str}")
+    
+    # API Key 脱敏打印
+    if api_key:
+        masked_key = f"{api_key[:6]}...{api_key[-4:]}" if len(api_key) > 10 else "***"
+        print(f"   - 使用 API Key: {masked_key}")
+    else:
+        print(f"   - 使用 API Key: ❌ 未配置 (将尝试读取 .env 或 运行在公共数据模式)")
+    print("="*50)
 
     print(f"🚀 Starting Instance {args.instance_id}")
     print(f"   Mode: {mode.upper()}")
@@ -114,6 +191,8 @@ def main():
         if instance:
             instance.status = 'ERROR'
             session.commit()
+            # Redis 推送
+            redis_client.publish_status(args.instance_id, {'status': 'ERROR'})
         session.close()
         return
         
@@ -122,8 +201,11 @@ def main():
     # 初始化 Cerebro
     cerebro = bt.Cerebro()
     
-    # 初始化 Store (目前默认 Testnet/Sim)
-    store = BinanceStore(api_key=api_key, secret_key=secret_key, testnet=True)
+    # 从配置中获取测试网设置 (默认 True 确保安全)
+    testnet = sys_config.get('testnet', True)
+    
+    # 初始化 Store
+    store = BinanceStore(api_key=api_key, secret_key=secret_key, testnet=testnet)
     
     # --- Risk Manager Setup (Phase 3) ---
     from src.engine_backtrader.risk_manager import RiskManager
@@ -179,10 +261,19 @@ def main():
     # --- Phase 1: 数据完整性校验与重试 ---
     max_retries = 3
     data = None
+    is_live = (mode == 'live')
+    
     for attempt in range(max_retries):
         try:
-            data = store.get_data(symbol=symbol, days=days, timeframe=timeframe)
-            if len(data) > 0:
+            # 对于实盘模式，必须启用 _realtime=True
+            data = store.get_data(
+                symbol=symbol, 
+                days=days, 
+                timeframe=timeframe, 
+                _realtime=is_live,
+                instance_id=args.instance_id # 传入 ID 用于实时推送
+            )
+            if len(data) > 0 or is_live: # 实盘模式下，即使初始数据为空也允许继续
                 print(f"✅ Data loaded successfully (Attempt {attempt + 1})")
                 break
             else:
@@ -212,8 +303,18 @@ def main():
     cerebro.addstrategy(strategy_cls, **config)
     
     # 添加 DB Analyzer (传入 user_id 和 instance_id)
-    cerebro.addanalyzer(SQLiteAnalyzer, _name='db', user_id=user_id, instance_id=args.instance_id)
+    cerebro.addanalyzer(SQLiteAnalyzer, _name='db', 
+                        user_id=user_id, 
+                        instance_id=args.instance_id,
+                        mode=mode)
     
+    # --- Realtime Market Feed (Redis) ---
+    if mode == 'live':
+        cerebro.addanalyzer(RedisMarketFeed, _name='redis_feed',
+                            instance_id=args.instance_id,
+                            symbol=symbol)
+    # ------------------------------------
+
     # --- P0: 添加核心指标分析器 ---
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trade_analyzer')
@@ -258,7 +359,13 @@ def main():
         session = db_manager.get_session()
         instance = session.query(StrategyInstance).filter_by(id=args.instance_id).first()
         if instance:
-            instance.status = 'COMPLETED'
+            # 如果是实盘模式却异常结束了，标记为 STOPPED 而不是 COMPLETED
+            if mode == 'live':
+                instance.status = 'STOPPED'
+                print("⚠️ Live instance finished unexpectedly.")
+            else:
+                instance.status = 'COMPLETED'
+                
             instance.pid = None
             instance.metrics_json = json.dumps(metrics) # 保存指标
             
@@ -298,6 +405,13 @@ def main():
             # ---------------------------------------------
 
             session.commit()
+            
+            # Redis 推送最终状态
+            redis_client.publish_status(args.instance_id, {
+                'status': instance.status, 
+                'pid': None,
+                'metrics': metrics
+            })
         session.close()
         
     except Exception as e:

@@ -10,5 +10,4 @@ logs/
 .secret_key
 *.db
 *.log
-docs/
 config/strategies/
