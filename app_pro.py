@@ -897,155 +897,95 @@ def instance_monitor_task():
 # ui.timer(5.0, instance_monitor_task) # Cannot define global UI element with @ui.page
 
 def render_highchart(inst):
-    # 1. Load Data
     try:
         config = json.loads(inst.config_json)
         tf = config.get('sys', {}).get('timeframe', '1m')
     except:
         tf = '1m'
-        
     df = load_kline_data(inst.symbol, limit=500, timeframe=tf)
-    
-    # 2. Indicators
-    # Need to handle empty DF
     if df.empty:
         ui.label('暂无 K 线数据').classes('text-gray-500')
         return
-
     main_overlays, sub_charts = calculate_indicators(df, inst.strategy_name, inst.config_json)
-    
-    # 2.5 Load Trades for Markers
     session = db_manager.get_session()
     trades = session.query(TradeRecord).filter_by(instance_id=inst.id).all()
     session.close()
-    
-    flags_data = []
-    if trades:
-        for t in trades:
-            if t.side in ['BUY', 'SELL']:
-                color = '#26a69a' if t.side == 'BUY' else '#ef5350'
-                title = 'B' if t.side == 'BUY' else 'S'
-                flags_data.append({
-                    'x': int(t.timestamp.timestamp() * 1000),
-                    'title': title,
-                    'text': f"{t.side} {t.size} @ {t.price}",
-                    'fillColor': color,
-                    'style': {'color': 'white'}
-                })
-
-    # 3. Series Construction
-    ohlc = [[int(x['time']*1000), x['open'], x['high'], x['low'], x['close']] for x in df.to_dict('records')]
-    
-    series_list = [{
-        'type': 'candlestick',
-        'name': inst.symbol,
-        'data': ohlc,
-        'yAxis': 0,
-        'id': 'main_series'
-    }]
-    
-    # Overlays
-    for ov in main_overlays:
-        series_list.append({
-            'type': 'line',
-            'name': ov['options'].get('title', 'Indicator'),
-            'data': [[int(d['time']*1000), d['value']] for d in ov['data'] if d['value'] is not None],
-            'color': ov['options'].get('color', '#ffeb3b'),
-            'lineWidth': 1,
-            'yAxis': 0
-        })
-
-    # Trade Markers
-    if flags_data:
-        series_list.append({
-            'type': 'flags',
-            'data': flags_data,
-            'onSeries': 'main_series',
-            'shape': 'circlepin',
-            'width': 16
-        })
-
-    # Sub Charts (MACD etc)
-    y_axis = [{
-        'height': '70%',
-        'lineWidth': 1,
-        'gridLineWidth': 0.1,
-        'gridLineColor': '#333'
-    }]
-    
-    if sub_charts:
-        y_axis[0]['height'] = '60%'
-        y_axis.append({
-            'top': '65%',
-            'height': '35%',
-            'offset': 0,
-            'lineWidth': 1,
-            'gridLineWidth': 0.1,
-            'gridLineColor': '#333',
-            'title': {'text': 'Indicators'}
-        })
-        
-        for sub in sub_charts:
-            for s in sub['series']:
-                data_pts = [[int(d['time']*1000), d['value']] for d in s['data'] if d['value'] is not None]
-                series_list.append({
-                    'type': 'column' if s['type'] == 'Histogram' else 'line',
-                    'name': s['options'].get('title', 'Sub'),
-                    'data': data_pts,
-                    'yAxis': 1,
-                    'color': s['options'].get('color', '#fff')
-                })
-
-    # 4. Render
-    chart = ui.highchart({
-        'chart': {'backgroundColor': '#1e1e1e', 'height': 600, 'panning': True, 'zoomType': 'x', 'panKey': 'shift'},
-        'rangeSelector': {'enabled': True, 'inputEnabled': False, 'buttonTheme': {'fill': '#333', 'style': {'color': '#ccc'}, 'states': {'select': {'fill': '#5898d4', 'style': {'color': '#fff'}}}}},
-        'navigator': {'enabled': True, 'maskFill': 'rgba(255,255,255,0.1)', 'series': {'color': '#5898d4', 'lineColor': '#5898d4'}},
-        'scrollbar': {'enabled': False},
-        'title': {'text': ''},
-        'xAxis': {'type': 'datetime', 'gridLineWidth': 0.1, 'gridLineColor': '#333'},
-        'yAxis': y_axis,
-        'plotOptions': {'candlestick': {'color': '#ef5350', 'upColor': '#26a69a', 'lineColor': '#ef5350', 'upLineColor': '#26a69a'}},
-        'series': series_list,
-        'credits': {'enabled': False}
-    }, extras=['stock']).classes('w-full')
-    
-    # Real-time updates logic (simplified for brevity, can attach timer)
-    # Note: Full indicator recalc on update is heavy, maybe just update price for now
-    # Or keep the previous timer logic.
-    
-    # Use a container to manage the timer, so it's destroyed when the component is removed
-    # But in NiceGUI, ui.timer inside a scope (like instance_card) might persist if not handled?
-    # Actually, if we bind the timer to the UI element's lifecycle or check visibility.
-    # Simple check: check if the chart element is still on the client? 
-    # ui.timer returns a Timer object.
-    
-    async def update_chart():
-        if inst.status != 'RUNNING': return
-        # Performance opt: check if tab is visible? 
-        # Hard to do in simple NiceGUI without client-side state binding.
-        # Just proceed for now, but ensure we don't error out.
-        
+    markers = []
+    for t in trades:
+        color = '#ef5350' if t.side in ['SHORT', 'SELL'] else '#26a69a'
+        text = f"{t.side} @ {t.price}"
+        shape = 'arrowDown' if color == '#ef5350' else 'arrowUp'
+        position = 'aboveBar' if color == '#ef5350' else 'belowBar'
+        ts = int(t.timestamp.timestamp())
+        markers.append({'time': ts, 'position': position, 'color': color, 'shape': shape, 'text': text})
+    def _normalize(o):
         try:
-            candles = redis_client.get_latest_market_data(inst.id)
-            if not candles: return
-            
-            last_c = candles[-1]
-            pt = [int(last_c['time']*1000), last_c['open'], last_c['high'], last_c['low'], last_c['close']]
-            
-            # To avoid massive payload, we can just update the last point if time matches
-            # Accessing chart.options directly on server side
-            curr_data = chart.options['series'][0]['data']
-            if curr_data:
-                if curr_data[-1][0] == pt[0]:
-                    curr_data[-1] = pt
-                else:
-                    curr_data.append(pt)
-                chart.update()
+            import numpy as np
         except Exception:
-            pass # Ignore update errors
-
-    ui.timer(1.0, update_chart)
+            np = None
+        if isinstance(o, dict):
+            return {k: _normalize(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_normalize(v) for v in o]
+        if np:
+            if isinstance(o, np.integer):
+                return int(o)
+            if isinstance(o, np.floating):
+                return float(o)
+        if isinstance(o, float):
+            import math
+            if math.isnan(o) or math.isinf(o):
+                return None
+        return o
+    overlays_json = json.dumps(_normalize(main_overlays))
+    subcharts_json = json.dumps(_normalize(sub_charts))
+    markers_json = json.dumps(_normalize(markers))
+    cid = inst.id
+    html_str = f"""
+    <div id=\"lc_main_{cid}\" style=\"height: 420px;\"></div>
+    <div id=\"lc_sub_{cid}\" style=\"height: 160px; margin-top:6px;\"></div>
+    <script type=\"module\">
+    import {{ createChart }} from 'https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js';
+    const mEl = document.getElementById('lc_main_{cid}');
+    const chart = createChart(mEl, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: 400 }});
+    const series = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
+    fetch('http://localhost:8000/api/candles?inst_id={cid}&limit=500').then(r => r.json()).then(data => {{
+      const initial = data.map(d => ({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }}));
+      series.setData(initial);
+      const overlays = {overlays_json};
+      overlays.forEach(ov => {{
+        const ls = chart.addLineSeries({{ color: ov.options?.color || '#ffeb3b', lineWidth: ov.options?.lineWidth || 1 }});
+        const data = ov.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+        ls.setData(data);
+      }});
+      const markers = {markers_json};
+      try {{ series.setMarkers(markers); }} catch (e) {{}}
+      const subs = {subcharts_json};
+      if (subs && subs.length) {{
+        const sEl = document.getElementById('lc_sub_{cid}');
+        const chart2 = createChart(sEl, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: subs[0].height || 150 }});
+        subs.forEach(sub => {{
+          sub.series.forEach(s => {{
+            let ss;
+            if (s.type === 'Histogram') {{
+              ss = chart2.addHistogramSeries({{ color: s.options?.color || '#26a69a' }});
+            }} else {{
+              ss = chart2.addLineSeries({{ color: s.options?.color || '#fff', lineWidth: s.options?.lineWidth || 1 }});
+            }}
+            const data = s.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+            ss.setData(data);
+          }});
+        }});
+      }}
+    }});
+    const ws = new WebSocket('ws://localhost:8000/ws/candles/{cid}');
+    ws.onmessage = (ev) => {{
+      const d = JSON.parse(ev.data);
+      series.update({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }});
+    }};
+    </script>
+    """
+    ui.html(html_str, sanitize=False).classes('w-full')
 
 def render_equity_chart(inst):
     container = ui.column().classes('w-full')

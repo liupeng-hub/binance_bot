@@ -9,7 +9,6 @@ import sys
 import time
 import glob
 import html
-from streamlit_lightweight_charts import renderLightweightCharts
 import streamlit.components.v1 as components
 from src.utils.data_helper import load_kline_data, calculate_indicators
 
@@ -134,6 +133,7 @@ def user_settings():
 
 import psutil
 from datetime import timezone
+import json
 
 # --- Fragment for Live Chart ---
 def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode, created_at):
@@ -306,19 +306,74 @@ def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode,
                 })
             
             # 改为浏览器侧 WS 增量更新：首屏通过 REST 拉取历史，随后用 WS 更新最后一根或追加新一根
+            # 为防止 numpy 类型在序列化时报错，这里做一次纯 Python 类型归一化
+            def _normalize(o):
+                try:
+                    import numpy as np
+                except Exception:
+                    np = None
+                if isinstance(o, dict):
+                    return {k: _normalize(v) for k, v in o.items()}
+                if isinstance(o, list):
+                    return [_normalize(v) for v in o]
+                if np:
+                    if isinstance(o, np.integer):
+                        return int(o)
+                    if isinstance(o, np.floating):
+                        return float(o)
+                if isinstance(o, float):
+                    import math
+                    if math.isnan(o) or math.isinf(o):
+                        return None
+                return o
+
+            overlays_json = json.dumps(_normalize(main_overlays))
+            subcharts_json = json.dumps(_normalize(sub_charts_data))
+            markers_json = json.dumps(_normalize(markers))
             html = f"""
             <div id=\"chart_{instance_id}\" style=\"height: 420px;\"></div>
+            <div id=\"sub_{instance_id}\" style=\"height: 160px; margin-top:6px;\"></div>
             <script type=\"module\">
             import {{ createChart }} from 'https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js';
             const el = document.getElementById('chart_{instance_id}');
             const chart = createChart(el, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: 400 }});
             const series = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
 
+            // 首屏 REST 历史
             fetch('http://localhost:8000/api/candles?inst_id={instance_id}&limit=500').then(r => r.json()).then(data => {{
               const initial = data.map(d => ({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }}));
               series.setData(initial);
+              // 叠加指标（主图）
+              const overlays = {overlays_json};
+              overlays.forEach(ov => {{
+                const ls = chart.addLineSeries({{ color: ov.options?.color || '#ffeb3b', lineWidth: ov.options?.lineWidth || 1 }});
+                const data = ov.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+                ls.setData(data);
+              }});
+              // 交易标记
+              const markers = {markers_json};
+              try {{ series.setMarkers(markers); }} catch (e) {{}}
+              // 副图（如果存在）
+              const subs = {subcharts_json};
+              if (subs && subs.length) {{
+                const el2 = document.getElementById('sub_{instance_id}');
+                const chart2 = createChart(el2, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: subs[0].height || 150 }});
+                subs.forEach(sub => {{
+                  sub.series.forEach(s => {{
+                    let ss;
+                    if (s.type === 'Histogram') {{
+                      ss = chart2.addHistogramSeries({{ color: s.options?.color || '#26a69a' }});
+                    }} else {{
+                      ss = chart2.addLineSeries({{ color: s.options?.color || '#fff', lineWidth: s.options?.lineWidth || 1 }});
+                    }}
+                    const data = s.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+                    ss.setData(data);
+                  }});
+                }});
+              }}
             }});
 
+            // WS 实时增量（仅主图K线）
             const ws = new WebSocket('ws://localhost:8000/ws/candles/{instance_id}');
             ws.onmessage = (ev) => {{
               const d = JSON.parse(ev.data);
@@ -326,7 +381,7 @@ def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode,
             }};
             </script>
             """
-            components.html(html, height=430)
+            components.html(html, height=600)
         else:
             st.warning("暂无 K 线数据 (实例可能正在初始化)")
     finally:
