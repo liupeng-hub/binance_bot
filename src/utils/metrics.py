@@ -80,7 +80,7 @@ def analyze_trade_list(trades):
     # Kelly Criterion (Simple)
     # f = p - q / b (p=win_rate, q=loss_rate, b=odds)
     # b = avg_win / abs(avg_loss)
-    if avg_loss != 0:
+    if avg_loss != 0 and avg_win != 0:
         b = avg_win / abs(avg_loss)
         q = 1 - win_rate
         kelly = win_rate - (q / b)
