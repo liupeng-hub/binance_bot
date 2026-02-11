@@ -12,7 +12,7 @@ def load_kline_data(symbol, start_ts=None, end_ts=None, limit=10000, timeframe=N
     """
     df_db = pd.DataFrame()
 
-    # --- 从数据库加载 ---
+        # --- 从数据库加载 ---
     try:
         session = db_manager.get_session()
         query = session.query(MarketData).filter(MarketData.symbol == symbol)
@@ -23,13 +23,20 @@ def load_kline_data(symbol, start_ts=None, end_ts=None, limit=10000, timeframe=N
         if end_ts:
             query = query.filter(MarketData.timestamp <= pd.to_datetime(end_ts, unit='s'))
             
-        results = query.order_by(MarketData.timestamp.asc()).all()
+        # Optimize: Limit columns to reduce network/memory usage
+        results = query.with_entities(
+            MarketData.timestamp, MarketData.open, MarketData.high, 
+            MarketData.low, MarketData.close, MarketData.volume
+        ).order_by(MarketData.timestamp.asc()).all()
+        
         session.close()
         
         if results:
             db_list = [{
                 'time': int(r.timestamp.timestamp()),
-                'open': r.open, 'high': r.high, 'low': r.low, 'close': r.close, 'volume': r.volume
+                'open': float(r.open), 'high': float(r.high), 
+                'low': float(r.low), 'close': float(r.close), 
+                'volume': float(r.volume)
             } for r in results]
             df_db = pd.DataFrame(db_list)
     except Exception as e:
@@ -82,8 +89,11 @@ def calculate_indicators(df, strategy_name, config_json):
         df['sma_slow'] = df['close'].rolling(window=slow_period).mean()
         
         # Replace NaN with None for chart data
-        sma_fast_data = df[['time', 'sma_fast']].rename(columns={'sma_fast': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        sma_slow_data = df[['time', 'sma_slow']].rename(columns={'sma_slow': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        sma_fast_df = df[['time', 'sma_fast']].rename(columns={'sma_fast': 'value'})
+        sma_fast_data = sma_fast_df.where(sma_fast_df.notnull(), None).dropna().to_dict('records')
+        
+        sma_slow_df = df[['time', 'sma_slow']].rename(columns={'sma_slow': 'value'})
+        sma_slow_data = sma_slow_df.where(sma_slow_df.notnull(), None).dropna().to_dict('records')
 
         main_overlays.append({
             "type": 'Line',
@@ -106,9 +116,14 @@ def calculate_indicators(df, strategy_name, config_json):
         df['upper'] = df['sma'] + (df['std'] * dev)
         df['lower'] = df['sma'] - (df['std'] * dev)
         
-        upper_data = df[['time', 'upper']].rename(columns={'upper': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        lower_data = df[['time', 'lower']].rename(columns={'lower': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        mid_data = df[['time', 'sma']].rename(columns={'sma': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        upper_df = df[['time', 'upper']].rename(columns={'upper': 'value'})
+        upper_data = upper_df.where(upper_df.notnull(), None).dropna().to_dict('records')
+        
+        lower_df = df[['time', 'lower']].rename(columns={'lower': 'value'})
+        lower_data = lower_df.where(lower_df.notnull(), None).dropna().to_dict('records')
+        
+        mid_df = df[['time', 'sma']].rename(columns={'sma': 'value'})
+        mid_data = mid_df.where(mid_df.notnull(), None).dropna().to_dict('records')
 
         main_overlays.append({"type": 'Line', "data": upper_data, "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Upper"}})
         main_overlays.append({"type": 'Line', "data": lower_data, "options": {"color": 'rgba(128, 0, 128, 0.5)', "lineWidth": 1, "title": "Lower"}})
@@ -136,8 +151,11 @@ def calculate_indicators(df, strategy_name, config_json):
         df['buy_line'] = df['open'] + k1 * df['range']
         df['sell_line'] = df['open'] - k2 * df['range']
         
-        buy_data = df[['time', 'buy_line']].rename(columns={'buy_line': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        sell_data = df[['time', 'sell_line']].rename(columns={'sell_line': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        buy_df = df[['time', 'buy_line']].rename(columns={'buy_line': 'value'})
+        buy_data = buy_df.where(buy_df.notnull(), None).dropna().to_dict('records')
+        
+        sell_df = df[['time', 'sell_line']].rename(columns={'sell_line': 'value'})
+        sell_data = sell_df.where(sell_df.notnull(), None).dropna().to_dict('records')
 
         main_overlays.append({"type": 'Line', "data": buy_data, "options": {"color": 'green', "lineWidth": 1, "title": "Buy Line"}})
         main_overlays.append({"type": 'Line', "data": sell_data, "options": {"color": 'red', "lineWidth": 1, "title": "Sell Line"}})
@@ -158,9 +176,14 @@ def calculate_indicators(df, strategy_name, config_json):
         
         # 构建副图 Series
         # 注意：数据需要过滤 NaN，否则 LightWeightCharts 可能渲染失败
-        macd_data = df[['time', 'macd']].rename(columns={'macd': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        diff_data = df[['time', 'diff']].rename(columns={'diff': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
-        dea_data = df[['time', 'dea']].rename(columns={'dea': 'value'}).where(pd.notnull(df), None).dropna().to_dict('records')
+        macd_df = df[['time', 'macd']].rename(columns={'macd': 'value'})
+        macd_data = macd_df.where(macd_df.notnull(), None).dropna().to_dict('records')
+        
+        diff_df = df[['time', 'diff']].rename(columns={'diff': 'value'})
+        diff_data = diff_df.where(diff_df.notnull(), None).dropna().to_dict('records')
+        
+        dea_df = df[['time', 'dea']].rename(columns={'dea': 'value'})
+        dea_data = dea_df.where(dea_df.notnull(), None).dropna().to_dict('records')
         
         if not macd_data: # 如果计算结果为空 (e.g. 数据不够长)
              return [], []

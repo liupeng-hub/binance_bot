@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import hashlib
 import json
 import uuid
@@ -17,7 +18,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, 'src'))
 
 from src.utils.db_manager import db_manager
-from src.utils.db_models import User, ExchangeConfig, StrategyInstance, TradeRecord, EquityRecord, OptimizationJob
+from src.utils.db_models import User, ExchangeConfig, StrategyInstance, TradeRecord, EquityRecord, OptimizationJob, Tournament, TournamentResult
 from src.utils.redis_client import redis_client
 from src.utils.strategy_loader import StrategyLoader
 from src.utils.process_manager import process_manager
@@ -38,7 +39,7 @@ if 'view_mode' not in st.session_state:
 if 'expanded_instances' not in st.session_state:
     st.session_state.expanded_instances = set()
 
-from datetime import timezone, timedelta
+from datetime import timezone, timedelta, datetime
 
 # --- 缓存优化 ---
 @st.cache_data(ttl=5) # 降低缓存时间以支持实时更新
@@ -134,11 +135,20 @@ def user_settings():
 import psutil
 from datetime import timezone
 import json
+import requests
 
 # --- Fragment for Live Chart ---
 def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode, created_at):
     session = db_manager.get_session()
     try:
+        # --- 新版渲染：嵌入独立 React 前端 (无条件渲染) ---
+        # 将其移至最上方，确保即使后端数据加载失败/为空，前端页面也能加载
+        # 使用 HashRouter，路径变为 /#/chart/{id}
+        frontend_url = f"http://localhost:5173/#/chart/{instance_id}"
+        st.markdown(f"""
+        <iframe src="{frontend_url}" width="100%" height="600" frameborder="0" style="border-radius: 5px; background-color: #1e1e1e;" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+        """, unsafe_allow_html=True)
+
         # 1. 先获取交易记录
         trades = session.query(TradeRecord).filter_by(instance_id=instance_id).all()
         
@@ -206,6 +216,7 @@ def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode,
                     merged['time'] = merged['time'].astype(int)
                     kline_df = merged.drop_duplicates(subset=['time'], keep='last').sort_values('time').reset_index(drop=True)
         # ----------------------------
+
         
         if not kline_df.empty:
             candle_data = kline_df.to_dict('records')
@@ -327,63 +338,11 @@ def _render_chart_content(instance_id, symbol, config_json, strategy_name, mode,
                         return None
                 return o
 
-            overlays_json = json.dumps(_normalize(main_overlays))
-            subcharts_json = json.dumps(_normalize(sub_charts_data))
-            markers_json = json.dumps(_normalize(markers))
-            html = f"""
-            <div id=\"chart_{instance_id}\" style=\"height: 420px;\"></div>
-            <div id=\"sub_{instance_id}\" style=\"height: 160px; margin-top:6px;\"></div>
-            <script type=\"module\">
-            import {{ createChart }} from 'https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js';
-            const el = document.getElementById('chart_{instance_id}');
-            const chart = createChart(el, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: 400 }});
-            const series = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
 
-            // 首屏 REST 历史
-            fetch('http://localhost:8000/api/candles?inst_id={instance_id}&limit=500').then(r => r.json()).then(data => {{
-              const initial = data.map(d => ({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }}));
-              series.setData(initial);
-              // 叠加指标（主图）
-              const overlays = {overlays_json};
-              overlays.forEach(ov => {{
-                const ls = chart.addLineSeries({{ color: ov.options?.color || '#ffeb3b', lineWidth: ov.options?.lineWidth || 1 }});
-                const data = ov.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
-                ls.setData(data);
-              }});
-              // 交易标记
-              const markers = {markers_json};
-              try {{ series.setMarkers(markers); }} catch (e) {{}}
-              // 副图（如果存在）
-              const subs = {subcharts_json};
-              if (subs && subs.length) {{
-                const el2 = document.getElementById('sub_{instance_id}');
-                const chart2 = createChart(el2, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: subs[0].height || 150 }});
-                subs.forEach(sub => {{
-                  sub.series.forEach(s => {{
-                    let ss;
-                    if (s.type === 'Histogram') {{
-                      ss = chart2.addHistogramSeries({{ color: s.options?.color || '#26a69a' }});
-                    }} else {{
-                      ss = chart2.addLineSeries({{ color: s.options?.color || '#fff', lineWidth: s.options?.lineWidth || 1 }});
-                    }}
-                    const data = s.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
-                    ss.setData(data);
-                  }});
-                }});
-              }}
-            }});
+            
+            # --- 旧版 HTML 生成逻辑已移除，改为使用上述 iframe ---
+            # 原有的 Plotly 后备渲染保留在下方
 
-            // WS 实时增量（仅主图K线）
-            const ws = new WebSocket('ws://localhost:8000/ws/candles/{instance_id}');
-            ws.onmessage = (ev) => {{
-              const d = JSON.parse(ev.data);
-              series.update({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }});
-            }};
-            </script>
-            """
-            components.html(html, height=600)
-        else:
-            st.warning("暂无 K 线数据 (实例可能正在初始化)")
     finally:
         session.close()
 
@@ -400,7 +359,7 @@ def render_chart_fragment_live(instance_id, symbol, config_json, strategy_name, 
     _render_chart_content(instance_id, symbol, config_json, strategy_name, mode, created_at)
 
 # --- Fragment for Live Logs ---
-@st.fragment(run_every=2)
+@st.fragment(run_every=5) # 降低刷新频率：2s -> 5s
 def render_log_fragment(instance_id, log_path):
     redis_logs = redis_client.get_latest_logs(instance_id)
     if redis_logs:
@@ -416,7 +375,8 @@ def render_log_fragment(instance_id, log_path):
 
     if log_lines:
         parsed_lines = []
-        for line in log_lines[-500:]:
+        # 减少渲染行数：500 -> 100，提高前端性能
+        for line in log_lines[-100:]:
             try:
                 line_str = line.strip()
                 if not line_str: continue
@@ -536,8 +496,9 @@ def render_actions_fragment(instance_id):
                 process_manager.start_instance(instance_id)
                 st.rerun()
             if c_del.button("🗑 删除", key=f"del_{instance_id}", use_container_width=True):
-                session.delete(inst)
-                session.commit()
+                ok = db_manager.delete_instance_cascade(session, instance_id)
+                if not ok:
+                    st.error("删除失败：请稍后重试或检查数据库约束")
                 st.rerun()
     finally:
         session.close()
@@ -555,13 +516,15 @@ def instance_monitor():
             loader = get_strategy_loader()
             strategies = loader.load_strategies()
 
-            # 移除自动刷新，改用 Fragments 独立刷新
-            # from streamlit_autorefresh import st_autorefresh
-            # st_autorefresh(interval=5000, limit=None, key="instance_monitor_refresh")
-            
-            # 添加手动刷新按钮
-            if st.button("🔄 刷新列表 (发现新实例)", key="refresh_instances"):
-                st.rerun()
+            # --- Control Bar ---
+            col_ctrl_1, col_ctrl_2 = st.columns([1, 5])
+            with col_ctrl_1:
+                if st.button("🔄 刷新列表", key="refresh_instances"):
+                    st.rerun()
+            with col_ctrl_2:
+                if st.button("🔽 全部折叠", key="collapse_all_instances"):
+                    st.session_state.expanded_instances = set()
+                    st.rerun()
             
             for inst in instances:
                 # --- 0. 尝试从 Redis 获取实时状态 ---
@@ -581,14 +544,17 @@ def instance_monitor():
                 # --- 布局重构 (v4) ---
                 with st.container():
                     # 定义列宽: [模式, 信息, 状态, 盈亏, 操作, 详情]
-                    cols = st.columns([0.8, 3, 1.2, 2, 2.5, 1])
+                    cols = st.columns([1.3, 3, 1.2, 2, 2.5, 1])
                     
                     # 1. 模式 (Badge)
                     with cols[0]:
                         if inst.mode == 'live':
-                            st.markdown(":red[**[实盘]**]")
+                            if inst.config_json and 'testnet' in inst.config_json and '"testnet": true' in inst.config_json:
+                                st.markdown(":orange[**[测试网实盘]**]") # Orange for Testnet
+                            else:
+                                st.markdown(":red[**[正式网实盘]**]")
                         else:
-                            st.markdown(":blue[**[回测]**]")
+                            st.markdown(":blue[**[模拟回测]**]")
                     
                     # 2. 信息 (Symbol + Strategy / ID)
                     with cols[1]:
@@ -932,7 +898,7 @@ def trading_desk():
         st.header("🖥️ 量化交易工作台")
         
         # --- Part 0: Debug Info ---
-        with st.expander("🐞 Debug Console (系统日志)", expanded=True):
+        with st.expander("🐞 Debug Console (系统日志)", expanded=False):
             log_dir = os.path.join(current_dir, 'logs', 'instances')
             if os.path.exists(log_dir):
                 log_files = sorted(glob.glob(os.path.join(log_dir, "*.log")), key=os.path.getmtime, reverse=True)
@@ -950,43 +916,6 @@ def trading_desk():
             else:
                 st.warning("日志目录不存在")
         
-        # --- Part 0.5: API Settings ---
-        with st.expander("🔑 交易所配置 (API Key)", expanded=False):
-            st.info("您的 API Key 将被加密存储。请分别配置实盘和测试网的 Key。")
-            with st.form("config_form_desk"):
-                st.subheader("💰 实盘交易 (Live Trading)")
-                api_key = st.text_input("Binance API Key (Real)", type="password")
-                secret_key = st.text_input("Binance Secret Key (Real)", type="password")
-                
-                st.subheader("🧪 测试网交易 (Futures Testnet)")
-                testnet_api_key = st.text_input("Testnet API Key", type="password")
-                testnet_secret_key = st.text_input("Testnet Secret Key", type="password")
-                
-                submitted = st.form_submit_button("保存配置")
-                
-                if submitted:
-                    session = db_manager.get_session()
-                    config = session.query(ExchangeConfig).filter_by(user_id=st.session_state.user_id).first()
-                    if not config:
-                        config = ExchangeConfig(user_id=st.session_state.user_id)
-                        session.add(config)
-                    
-                    # Update Real Keys if provided
-                    if api_key:
-                        config.api_key_enc = db_manager.encrypt_secret(api_key)
-                    if secret_key:
-                        config.secret_key_enc = db_manager.encrypt_secret(secret_key)
-                        
-                    # Update Testnet Keys if provided
-                    if testnet_api_key:
-                        config.testnet_api_key_enc = db_manager.encrypt_secret(testnet_api_key)
-                    if testnet_secret_key:
-                        config.testnet_secret_key_enc = db_manager.encrypt_secret(testnet_secret_key)
-                        
-                    session.commit()
-                    st.success("配置已保存！")
-                    session.close()
-
         # --- Part 1: Strategy Launcher ---
         with st.expander("➕ 创建新策略实例", expanded=False):
             loader = get_strategy_loader()
@@ -1287,7 +1216,6 @@ def optimization_lab():
     if not jobs:
         st.info("暂无优化任务")
     else:
-        st_autorefresh(interval=10000, key="opt_refresh")
         if st.button("🔄 刷新任务列表", key="refresh_jobs"):
             st.rerun()
         for job in jobs:
@@ -1327,17 +1255,29 @@ def optimization_lab():
     session.close()
 
 def user_dashboard():
-    menu = st.sidebar.radio("菜单", ["量化工作台", "参数调优", "策略文库"])
+    menu = st.sidebar.radio("菜单", ["量化工作台", "参数调优", "策略文库", "系统设置"])
     if menu == "量化工作台":
         trading_desk()
     elif menu == "参数调优":
         optimization_lab()
     elif menu == "策略文库":
         strategy_library()
+    elif menu == "系统设置":
+        settings_page()
 
 def admin_dashboard():
     st.title("🛡️ Admin Console")
     session = db_manager.get_session()
+    
+    # Global Tournament Stats
+    st.subheader("⚔️ Tournament Statistics")
+    tm1, tm2, tm3 = st.columns(3)
+    tm1.metric("Total Tournaments", session.query(Tournament).count())
+    tm2.metric("Running Tournaments", session.query(Tournament).filter_by(status='RUNNING').count())
+    tm3.metric("Pending Tournaments", session.query(Tournament).filter_by(status='PENDING').count())
+    
+    st.markdown("---")
+    
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Users", session.query(User).count())
     m2.metric("Total Instances", session.query(StrategyInstance).count())
@@ -1366,12 +1306,362 @@ def admin_dashboard():
         st.info("User has no instances.")
     session.close()
 
+def settings_page():
+    st.header("⚙️ 系统设置")
+    
+    with st.container():
+        st.subheader("🔑 交易所配置")
+        st.info("您的 API Key 将被加密存储，仅用于与交易所进行通信。")
+        
+        with st.form("settings_config_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 💰 实盘交易 (Live Trading)")
+                api_key = st.text_input("Binance API Key", type="password")
+                secret_key = st.text_input("Binance Secret Key", type="password")
+            
+            with col2:
+                st.markdown("#### 🧪 测试网 (Futures Testnet)")
+                testnet_api_key = st.text_input("Testnet API Key", type="password")
+                testnet_secret_key = st.text_input("Testnet Secret Key", type="password")
+            
+            st.markdown("---")
+            submitted = st.form_submit_button("💾 保存所有配置", type="primary")
+            
+            if submitted:
+                session = db_manager.get_session()
+                config = session.query(ExchangeConfig).filter_by(user_id=st.session_state.user_id).first()
+                if not config:
+                    config = ExchangeConfig(user_id=st.session_state.user_id)
+                    session.add(config)
+                
+                # Update Real Keys if provided
+                if api_key:
+                    config.api_key_enc = db_manager.encrypt_secret(api_key)
+                if secret_key:
+                    config.secret_key_enc = db_manager.encrypt_secret(secret_key)
+                    
+                # Update Testnet Keys if provided
+                if testnet_api_key:
+                    config.testnet_api_key_enc = db_manager.encrypt_secret(testnet_api_key)
+                if testnet_secret_key:
+                    config.testnet_secret_key_enc = db_manager.encrypt_secret(testnet_secret_key)
+                    
+                session.commit()
+                st.success("配置已成功保存！")
+                session.close()
+
+def strategy_pk_arena():
+    st.header("⚔️ 策略竞技场 (Strategy Arena)")
+    st.info("通过多维度回测比拼，筛选出最优的 [策略 + 标的 + 周期] 组合。支持参数网格搜索与贝叶斯优化。")
+    
+    # --- 1. 发起挑战 ---
+    with st.container(border=True):
+        st.subheader("🏆 发起挑战")
+        
+        # --- Step 1: Base Config (Interactive) ---
+        col1, col2 = st.columns(2)
+        with col1:
+            pk_name = st.text_input("锦标赛名称", value=f"PK-{datetime.now().strftime('%Y%m%d')}")
+            # Load available strategies
+            loader = get_strategy_loader()
+            strategies = loader.load_strategies()
+            avail_strategies = list(strategies.keys())
+            
+            # Determine safe defaults
+            default_strats = []
+            possible_defaults = ["SMACrossStrategy", "MACDStrategy", "SMA", "MACD"]
+            for name in possible_defaults:
+                if name in avail_strategies:
+                    default_strats.append(name)
+            
+            # If still empty, pick the first 2 available
+            if not default_strats and avail_strategies:
+                default_strats = avail_strategies[:2]
+                
+            selected_strats = st.multiselect("参赛策略 (Strategies)", avail_strategies, default=default_strats)
+            
+            selected_symbols = st.multiselect("参赛标的 (Symbols)", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"], default=["BTC/USDT", "ETH/USDT"])
+            
+        with col2:
+            selected_tfs = st.multiselect("时间周期 (Timeframes)", ["15m", "1h", "4h", "1d"], default=["1h", "4h"])
+            initial_cash = st.number_input("每局初始资金 (USDT)", value=10000.0)
+            
+            d1, d2 = st.columns(2)
+            start_date = d1.date_input("开始日期", value=datetime(2023, 1, 1))
+            end_date = d2.date_input("结束日期", value=datetime.now())
+        
+        st.divider()
+        st.subheader("2. 策略深度配置")
+        
+        # --- Step 2: Per-Strategy Config (Interactive) ---
+        strategies_config = {}
+        
+        if not selected_strats:
+            st.info("请先选择至少一个策略。")
+        else:
+            for strat in selected_strats:
+                with st.expander(f"⚙️ 配置: {strat}", expanded=True):
+                    s_info = strategies.get(strat, {})
+                    s_params = s_info.get('params', {})
+                    s_params_config = s_info.get('params_config', {})
+                    
+                    c_mode, c_opt = st.columns([1, 3])
+                    mode = c_mode.radio("参数模式", ["使用默认", "自定义/优化"], key=f"mode_{strat}")
+                    
+                    strat_cfg = {'mode': mode}
+                    
+                    if mode == "自定义/优化":
+                        opt_algo = c_opt.selectbox("优化算法", ["Grid Search (网格搜索)", "Bayesian (Optuna)"], key=f"algo_{strat}")
+                        strat_cfg['algorithm'] = 'optuna' if "Optuna" in opt_algo else 'grid'
+                        
+                        st.markdown("#### 参数范围设置")
+                        opt_config = {}
+                        
+                        # Dynamic Inputs based on Strategy Params
+                        for p_name, p_default in s_params.items():
+                            p_meta = s_params_config.get(p_name, {})
+                            p_label = p_meta.get('label', p_name)
+                            p_help = p_meta.get('help', '')
+                            
+                            # Only handle numeric params for optimization usually
+                            if isinstance(p_default, (int, float)):
+                                with st.container():
+                                    if "Grid" in opt_algo:
+                                        # Grid Search: Input comma-separated list
+                                        val_str = st.text_input(
+                                            f"{p_label} ({p_name}) - 候选值 (逗号分隔)", 
+                                            value=str(p_default),
+                                            help=f"默认值: {p_default}. {p_help}",
+                                            key=f"grid_{strat}_{p_name}"
+                                        )
+                                        try:
+                                            # Parse input
+                                            vals = [float(x.strip()) if '.' in x else int(x.strip()) for x in val_str.split(',') if x.strip()]
+                                            if vals:
+                                                opt_config[p_name] = vals
+                                        except:
+                                            st.error(f"无法解析参数 {p_name} 的输入值")
+                                            
+                                    else:
+                                        # Optuna: Min, Max, (Step)
+                                        c_min, c_max, c_step = st.columns(3)
+                                        p_min = c_min.number_input(f"{p_label} Min", value=float(p_default), key=f"opt_min_{strat}_{p_name}")
+                                        p_max = c_max.number_input(f"{p_label} Max", value=float(p_default)*2 if p_default!=0 else 10.0, key=f"opt_max_{strat}_{p_name}")
+                                        
+                                        # Step is optional for Optuna but useful for int
+                                        is_int = isinstance(p_default, int)
+                                        step_default = 1.0 if is_int else 0.1
+                                        p_step = c_step.number_input(f"Step (步长)", value=step_default, key=f"opt_step_{strat}_{p_name}")
+                                        
+                                        if p_max > p_min:
+                                            opt_config[p_name] = {
+                                                "start": p_min, 
+                                                "end": p_max, 
+                                                "step": p_step, 
+                                                "type": "int" if is_int else "float"
+                                            }
+                        
+                        strat_cfg['opt_config'] = opt_config
+                        
+                        # Show JSON preview for verification
+                        with st.expander("查看生成的配置 JSON", expanded=False):
+                            st.json(opt_config)
+                    
+                    strategies_config[strat] = strat_cfg
+
+        st.divider()
+        
+        # --- Step 3: Confirmation & Submit ---
+        # Calculate Estimated Tasks
+        total_tasks = 0
+        if selected_strats and selected_symbols and selected_tfs:
+            base_count = len(selected_symbols) * len(selected_tfs)
+            for strat in selected_strats:
+                cfg = strategies_config.get(strat, {})
+                if cfg.get('mode') == '使用默认':
+                    total_tasks += base_count
+                else:
+                    # Estimate based on algo
+                    # For Grid: Multiply combinations
+                    algo = cfg.get('algorithm', 'grid')
+                    opt_c = cfg.get('opt_config', {})
+                    
+                    if algo == 'grid':
+                        combos = 1
+                        for k, v in opt_c.items():
+                            if isinstance(v, list):
+                                combos *= len(v)
+                        total_tasks += base_count * combos
+                    else:
+                        # Optuna is treated as 1 optimization task per environment
+                        total_tasks += base_count * 1 
+                        
+        st.markdown(f"### 🎯 任务预估: `{total_tasks}` 个独立的后台回测/优化进程")
+        
+        if st.button("🚀 创建锦标赛 (Create Tournament)", type="primary", disabled=total_tasks==0):
+            # Create Record
+            config = {
+                "strategies": selected_strats,
+                "symbols": selected_symbols,
+                "timeframes": selected_tfs,
+                "initial_cash": initial_cash,
+                "start_date": str(start_date),
+                "end_date": str(end_date),
+                "strategies_config": strategies_config
+            }
+            
+            new_tour = Tournament(
+                id=str(uuid.uuid4()),
+                user_id=st.session_state.user_id,
+                name=pk_name,
+                config_json=json.dumps(config),
+                status='PENDING',
+                progress=0.0,
+                total_tasks=total_tasks
+            )
+            session.add(new_tour)
+            session.commit()
+            st.success("锦标赛已创建！")
+            time.sleep(1)
+            st.rerun()
+
+    # --- 2. 历史战绩 ---
+    st.divider()
+    st.subheader("📊 历史战绩")
+    
+    # Load User Tournaments
+    tours = session.query(Tournament).filter_by(user_id=st.session_state.user_id).order_by(Tournament.created_at.desc()).all()
+    
+    if not tours:
+        st.info("暂无历史记录")
+    else:
+        if st.button("🔄 刷新状态"):
+            st.rerun()
+            
+        for tour in tours:
+            with st.expander(f"{tour.name}  [{tour.status}]  (进度: {tour.completed_tasks}/{tour.total_tasks})", expanded=True):
+                # Status & Progress
+                st.progress(tour.progress)
+                
+                # Controls
+                c1, c2, c3, c4, c5 = st.columns(5)
+                
+                # Check PID
+                is_running = False
+                if tour.pid and psutil.pid_exists(tour.pid):
+                    is_running = True
+                
+                if tour.status == 'PENDING' or tour.status == 'STOPPED' or tour.status == 'PAUSED':
+                    if c1.button("▶ 启动/继续", key=f"start_{tour.id}"):
+                        # Start or Resume
+                        success, msg = process_manager.start_tournament(tour.id)
+                        if success:
+                            st.success(f"已启动: {msg}")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(f"启动失败: {msg}")
+                
+                if tour.status == 'RUNNING':
+                    if c2.button("⏸ 暂停", key=f"pause_{tour.id}"):
+                        # Pause just updates DB, runner checks it
+                        tour.status = 'PAUSED'
+                        session.commit()
+                        st.success("已发送暂停信号 (等待当前任务完成)")
+                        st.rerun()
+                        
+                    if c3.button("⏹ 停止", key=f"stop_{tour.id}"):
+                            # Stop kills process
+                            process_manager.stop_tournament(tour.id)
+                            st.success("已停止后台进程")
+                            st.rerun()
+                
+                if c5.button("🗑 删除记录", key=f"del_{tour.id}"):
+                        session.delete(tour)
+                        session.commit()
+                        st.rerun()
+
+                st.divider()
+
+                # Show Results
+                if tour.completed_tasks > 0:
+                    results = session.query(TournamentResult).filter_by(tournament_id=tour.id).all()
+                    if results:
+                        # 1. Prepare DataFrame for Leaderboard
+                        data = []
+                        for r in results:
+                            m = json.loads(r.metrics_json) if r.metrics_json else {}
+                            data.append({
+                                "Strategy": r.strategy_name,
+                                "Symbol": r.symbol,
+                                "TF": r.timeframe,
+                                "Net Profit": m.get('net_profit', 0),
+                                "Sharpe": m.get('sharpe_ratio', 0),
+                                "Max DD": m.get('max_drawdown', 0),
+                                "Win Rate": m.get('win_rate', 0) if 'win_rate' in m else 0, 
+                                "Total Return": m.get('total_return', 0)
+                            })
+                        
+                        df_res = pd.DataFrame(data)
+                        
+                        # 2. Leaderboard
+                        st.subheader("🏆 排行榜")
+                        st.dataframe(
+                            df_res.style.format({
+                                "Net Profit": "{:.2f}",
+                                "Sharpe": "{:.2f}",
+                                "Max DD": "{:.2%}",
+                                "Total Return": "{:.2%}"
+                            }).background_gradient(subset=['Net Profit'], cmap='Greens'),
+                            use_container_width=True
+                        )
+                        
+                        # 3. Visualization
+                        st.subheader("📊 深度分析")
+                        v_tab1, v_tab2 = st.tabs(["收益对比", "风险分布"])
+                        
+                        with v_tab1:
+                            if not df_res.empty:
+                                st.bar_chart(df_res, x="Strategy", y="Net Profit", color="Symbol")
+                        
+                        with v_tab2:
+                            if not df_res.empty:
+                                import plotly.express as px
+                                fig = px.scatter(
+                                    df_res, 
+                                    x="Max DD", 
+                                    y="Total Return", 
+                                    color="Strategy", 
+                                    hover_data=["Symbol", "TF"],
+                                    title="Risk (Max DD) vs Reward (Return)"
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                    
+    session.close()
+
+def user_dashboard():
+    menu = st.sidebar.radio("菜单", ["量化工作台", "策略竞技场", "参数调优", "策略文库", "系统设置"])
+    
+    if menu == "量化工作台":
+        trading_desk()
+    elif menu == "策略竞技场":
+        strategy_pk_arena()
+    elif menu == "参数调优":
+        optimization_lab()
+    elif menu == "策略文库":
+        strategy_library()
+    elif menu == "系统设置":
+        settings_page()
+
 def main():
     if not st.session_state.user_id:
         login_page()
     else:
         st.sidebar.markdown(f"### 👤 {st.session_state.username}")
         st.sidebar.markdown(f"Role: `{st.session_state.role}`")
+        
         if st.session_state.role == 'admin':
             mode = st.sidebar.radio("View Mode", ["User Mode", "Admin Mode"])
             st.session_state.view_mode = 'admin' if mode == "Admin Mode" else 'user'

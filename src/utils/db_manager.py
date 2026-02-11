@@ -5,7 +5,7 @@ import os
 import hashlib
 import json
 from dotenv import load_dotenv
-from .db_models import Base, User
+from .db_models import Base, User, TradeRecord, EquityRecord, SignalRecord, StrategyState, StrategyInstance
 
 class DBManager:
     def __init__(self, db_url=None):
@@ -51,13 +51,14 @@ class DBManager:
                 self.db_url,
                 echo=False,
                 connect_args=connect_args,
-                pool_pre_ping=True,      # 关键：每次取连接前先探测，防止超时断开
+                pool_pre_ping=True,      # 每次取连接前先探测，防止超时断开
                 pool_recycle=3600,       # 每小时回收一次连接
-                pool_size=int(os.environ.get('DB_POOL_SIZE', 5)),      # 连接池大小 (默认降低到 5)
-                max_overflow=int(os.environ.get('DB_MAX_OVERFLOW', 10)) # 允许临时溢出的最大连接数
+                pool_size=int(os.environ.get('DB_POOL_SIZE', 5)),      # 增加默认连接池大小 2->5
+                max_overflow=int(os.environ.get('DB_MAX_OVERFLOW', 10)), # 允许溢出 0->10，以应对突发请求
+                pool_timeout=int(os.environ.get('DB_POOL_TIMEOUT', 30)) # 增加超时等待 10->30秒
             )
             
-        self.Session = sessionmaker(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False, autoflush=True, autocommit=False)
         
     def init_db(self):
         """创建表结构并初始化默认管理员"""
@@ -101,6 +102,12 @@ class DBManager:
     def get_session(self):
         return self.Session()
 
+    def dispose(self):
+        try:
+            self.engine.dispose()
+        except Exception:
+            pass
+
     def execute_with_retry(self, func, max_retries=3):
         """执行数据库操作的重试逻辑"""
         last_exception = None
@@ -137,6 +144,23 @@ class DBManager:
     def decrypt_secret(self, encrypted_text):
         if not encrypted_text: return None
         return self.cipher.decrypt(encrypted_text.encode()).decode()
+
+    def delete_instance_cascade(self, session, instance_id: str):
+        """删除实例及其相关记录，避免外键约束冲突"""
+        try:
+            # 依次删除依赖表记录
+            session.query(TradeRecord).filter_by(instance_id=instance_id).delete(synchronize_session=False)
+            session.query(EquityRecord).filter_by(instance_id=instance_id).delete(synchronize_session=False)
+            session.query(SignalRecord).filter_by(instance_id=instance_id).delete(synchronize_session=False)
+            session.query(StrategyState).filter_by(instance_id=instance_id).delete(synchronize_session=False)
+            # 最后删除实例
+            session.query(StrategyInstance).filter_by(id=instance_id).delete(synchronize_session=False)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Delete cascade failed: {e}")
+            return False
 
 # 单例实例
 db_manager = DBManager()

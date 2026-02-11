@@ -176,4 +176,101 @@ class ProcessManager:
         except Exception as e:
             return False, str(e)
 
+    def start_tournament(self, tournament_id):
+        """
+        启动锦标赛任务 (异步进程)
+        """
+        # Concurrency Check
+        session = db_manager.get_session()
+        try:
+            # 1. Global limit (10)
+            global_running = session.query(Tournament).filter_by(status='RUNNING').count()
+            if global_running >= 10:
+                return False, "Global tournament limit reached (10/10). Please wait."
+            
+            # 2. User limit (2)
+            # Need to get user_id from tournament_id first
+            tour = session.query(Tournament).filter_by(id=tournament_id).first()
+            if not tour:
+                return False, "Tournament not found"
+                
+            user_running = session.query(Tournament).filter(
+                Tournament.user_id == tour.user_id,
+                Tournament.status == 'RUNNING'
+            ).count()
+            
+            if user_running >= 2:
+                # If this tournament itself is already running (re-entrance check), pass
+                if tour.status != 'RUNNING':
+                     return False, "User tournament limit reached (2/2). Please wait."
+
+            # Update status to PENDING/RUNNING handled by runner script mostly, 
+            # but we set PID here.
+            tour.status = 'RUNNING' # Or STARTING
+            session.commit()
+            
+        except Exception as e:
+            session.close()
+            return False, str(e)
+        finally:
+            session.close()
+
+        script_path = os.path.join(self.root_dir, 'src', 'engine_backtrader', 'tournament_runner.py')
+        
+        # 准备日志
+        log_dir = os.path.join(self.root_dir, 'logs', 'tournaments')
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"tour_{tournament_id}.log")
+        
+        # 构建命令
+        cmd = [sys.executable, '-u', script_path, '--tournament_id', str(tournament_id)]
+        
+        try:
+            with open(log_file, 'w') as f:
+                # 启动子进程
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=self.root_dir,
+                    stdout=f, 
+                    stderr=subprocess.STDOUT
+                )
+            
+            # Update PID
+            session = db_manager.get_session()
+            tour = session.query(Tournament).filter_by(id=tournament_id).first()
+            if tour:
+                tour.pid = process.pid
+                session.commit()
+            session.close()
+
+            return True, process.pid
+            
+        except Exception as e:
+            return False, str(e)
+            
+    def stop_tournament(self, tournament_id):
+        """
+        停止锦标赛
+        """
+        session = db_manager.get_session()
+        try:
+            tour = session.query(Tournament).filter_by(id=tournament_id).first()
+            if not tour:
+                return False, "Tournament not found"
+            
+            if tour.pid:
+                try:
+                    os.kill(tour.pid, signal.SIGTERM)
+                except:
+                    pass
+            
+            tour.status = 'STOPPED'
+            tour.pid = None
+            session.commit()
+            return True, "Stopped"
+        except Exception as e:
+            return False, str(e)
+        finally:
+            session.close()
+
 process_manager = ProcessManager()

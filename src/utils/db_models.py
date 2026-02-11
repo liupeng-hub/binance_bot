@@ -155,6 +155,61 @@ class SignalRecord(Base):
     price = Column(Float)
     comment = Column(String)
 
+class Tournament(Base):
+    """
+    策略竞技场 (锦标赛) 表
+    """
+    __tablename__ = 'tournaments'
+    
+    id = Column(String, primary_key=True) # UUID
+    user_id = Column(Integer, ForeignKey('users.id'))
+    
+    name = Column(String, nullable=False)
+    # 配置 (JSON): 包含策略池、标的池、周期池、资金、时间范围、优化模式等
+    config_json = Column(Text)
+    
+    status = Column(String, default='PENDING') # PENDING, RUNNING, PAUSED, STOPPED, COMPLETED, ERROR
+    progress = Column(Float, default=0.0) # 总进度
+    total_tasks = Column(Integer, default=0) # 预估总子任务数
+    completed_tasks = Column(Integer, default=0) # 已完成子任务数
+    
+    pid = Column(Integer, nullable=True) # 后台 Runner 进程 ID
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    
+    # 关联结果
+    results = relationship("TournamentResult", back_populates="tournament", cascade="all, delete-orphan")
+
+class TournamentResult(Base):
+    """
+    锦标赛结果明细表
+    """
+    __tablename__ = 'tournament_results'
+    
+    id = Column(String, primary_key=True) # UUID
+    tournament_id = Column(String, ForeignKey('tournaments.id'))
+    
+    strategy_name = Column(String)
+    symbol = Column(String)
+    timeframe = Column(String)
+    
+    # 最终使用的参数 (如果是深度优化，则是优选后的参数)
+    params_json = Column(Text)
+    
+    # 评价指标 (JSON): net_profit, sharpe, max_dd, win_rate, etc.
+    metrics_json = Column(Text)
+    
+    # 资金曲线 (JSON): 用于前端绘制 "赛跑图" (简化版，非全量)
+    equity_curve_json = Column(Text)
+    
+    status = Column(String) # COMPLETED, ERROR
+    error_msg = Column(Text)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    tournament = relationship("Tournament", back_populates="results")
+
 class OptimizationJob(Base):
     """
     参数调优任务表
@@ -163,6 +218,10 @@ class OptimizationJob(Base):
 
     id = Column(String, primary_key=True) # UUID
     user_id = Column(Integer, ForeignKey('users.id'))
+    
+    # 新增: 关联锦标赛 (可选)
+    # 如果该调优任务是由锦标赛触发的 (深度优化模式)，则关联之
+    tournament_id = Column(String, ForeignKey('tournaments.id'), nullable=True)
     
     strategy_name = Column(String, nullable=False)
     symbol = Column(String, nullable=False)

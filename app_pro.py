@@ -941,51 +941,123 @@ def render_highchart(inst):
     subcharts_json = json.dumps(_normalize(sub_charts))
     markers_json = json.dumps(_normalize(markers))
     cid = inst.id
-    html_str = f"""
-    <div id=\"lc_main_{cid}\" style=\"height: 420px;\"></div>
-    <div id=\"lc_sub_{cid}\" style=\"height: 160px; margin-top:6px;\"></div>
-    <script type=\"module\">
-    import {{ createChart }} from 'https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js';
-    const mEl = document.getElementById('lc_main_{cid}');
-    const chart = createChart(mEl, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: 400 }});
-    const series = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
-    fetch('http://localhost:8000/api/candles?inst_id={cid}&limit=500').then(r => r.json()).then(data => {{
-      const initial = data.map(d => ({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }}));
-      series.setData(initial);
-      const overlays = {overlays_json};
-      overlays.forEach(ov => {{
-        const ls = chart.addLineSeries({{ color: ov.options?.color || '#ffeb3b', lineWidth: ov.options?.lineWidth || 1 }});
-        const data = ov.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+    html_tpl = """
+    <div id=\"lc_main___CID__\" style=\"height: 420px;\"></div>
+    <div id=\"lc_sub___CID__\" style=\"height: 160px; margin-top:6px;\"></div>
+    __LC_BOOTSTRAP__
+    <script>
+    const LC = window.LightweightCharts;
+    if(!LC || typeof LC.createChart !== 'function'){ console.error('LightweightCharts not available'); return; }
+    const mEl = document.getElementById('lc_main___CID__');
+    const chart = LC.createChart(mEl, { layout: { background: { color: '#0e1117' }, textColor: '#d1d4dc' }, grid: { vertLines: { color: '#31333F' }, horzLines: { color: '#31333F' } }, height: 400 });
+    if(!chart){ console.error('Chart instance unavailable'); return; }
+    let series;
+    if (typeof chart.addCandlestickSeries === 'function') {
+      series = chart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+    } else if (typeof chart.addBarSeries === 'function') {
+      console.warn('Candlestick not available, falling back to BarSeries');
+      series = chart.addBarSeries({ upColor: '#26a69a', downColor: '#ef5350' });
+    } else if (typeof chart.addLineSeries === 'function') {
+      console.warn('Candlestick/Bar not available, falling back to LineSeries');
+      series = chart.addLineSeries({ color: '#26a69a', lineWidth: 2 });
+    } else {
+      console.error('Chart API unavailable');
+      return;
+    }
+    const initialFallback = __INITIAL__;
+    if (initialFallback && initialFallback.length) {
+      series.setData(initialFallback);
+    }
+    fetch('http://localhost:8000/api/candles?inst_id=__CID__&limit=500').then(r => r.json()).then(data => {
+      const initial = data.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
+      console.log('LC initial candles', initial.length, initial[0], initial[initial.length-1]);
+      if (initial.length) { series.setData(initial); }
+      const overlays = __OVERLAYS__;
+      overlays.forEach(ov => {
+        const color = (ov.options && ov.options.color) ? ov.options.color : '#ffeb3b';
+        const lw = (ov.options && ov.options.lineWidth) ? ov.options.lineWidth : 1;
+        const ls = chart.addLineSeries({ color: color, lineWidth: lw });
+        const data = ov.data.map(d => ({ time: d.time, value: d.value })).filter(p => p.value !== null && p.value !== undefined);
         ls.setData(data);
-      }});
-      const markers = {markers_json};
-      try {{ series.setMarkers(markers); }} catch (e) {{}}
-      const subs = {subcharts_json};
-      if (subs && subs.length) {{
-        const sEl = document.getElementById('lc_sub_{cid}');
-        const chart2 = createChart(sEl, {{ layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }}, grid: {{ vertLines: {{ color: '#31333F' }}, horzLines: {{ color: '#31333F' }} }}, height: subs[0].height || 150 }});
-        subs.forEach(sub => {{
-          sub.series.forEach(s => {{
-            let ss;
-            if (s.type === 'Histogram') {{
-              ss = chart2.addHistogramSeries({{ color: s.options?.color || '#26a69a' }});
-            }} else {{
-              ss = chart2.addLineSeries({{ color: s.options?.color || '#fff', lineWidth: s.options?.lineWidth || 1 }});
-            }}
-            const data = s.data.map(d => ({{ time: d.time, value: d.value }})).filter(p => p.value !== null && p.value !== undefined);
+      });
+      const markers = __MARKERS__;
+      try { series.setMarkers(markers); } catch (e) {}
+      const subs = __SUBS__;
+      if (subs && subs.length) {
+        const sEl = document.getElementById('lc_sub___CID__');
+        const chart2 = LC.createChart(sEl, { layout: { background: { color: '#0e1117' }, textColor: '#d1d4dc' }, grid: { vertLines: { color: '#31333F' }, horzLines: { color: '#31333F' } }, height: subs[0].height || 150 });
+        subs.forEach(sub => {
+          sub.series.forEach(s => {
+            const scolor = (s.options && s.options.color) ? s.options.color : (s.type === 'Histogram' ? '#26a69a' : '#fff');
+            const slw = (s.options && s.options.lineWidth) ? s.options.lineWidth : 1;
+            const ss = s.type === 'Histogram' ? chart2.addHistogramSeries({ color: scolor }) : chart2.addLineSeries({ color: scolor, lineWidth: slw });
+            const data = s.data.map(d => ({ time: d.time, value: d.value })).filter(p => p.value !== null && p.value !== undefined);
             ss.setData(data);
-          }});
-        }});
-      }}
-    }});
-    const ws = new WebSocket('ws://localhost:8000/ws/candles/{cid}');
-    ws.onmessage = (ev) => {{
-      const d = JSON.parse(ev.data);
-      series.update({{ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }});
-    }};
+          });
+        });
+        try { chart.timeScale().fitContent(); } catch(e) {}
+      }
+    });
+    let ws;
+    function connectWS() {
+      ws = new WebSocket('ws://localhost:8000/ws/candles/__CID__');
+      ws.onmessage = (ev) => {
+        const d = JSON.parse(ev.data);
+        if (d && d.type === 'candle' && d.data) {
+          const c = d.data;
+          if (series.update) {
+            if (c.open !== undefined) {
+              series.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
+            } else if (c.value !== undefined) {
+              series.update({ time: c.time, value: c.value });
+            }
+          }
+        }
+      };
+      ws.onclose = () => { setTimeout(connectWS, 2000); };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    }
+    connectWS();
     </script>
     """
+    # Inline Lightweight Charts to avoid network/CSP issues
+    lc_bootstrap = ""
+    try:
+        lc_path = os.path.join(current_dir, 'static', 'lightweight-charts.standalone.production.js')
+        with open(lc_path, 'r', encoding='utf-8') as f:
+            lc_js = f.read()
+        lc_bootstrap = f"<script>\n{lc_js}\n</script>"
+    except Exception:
+        lc_bootstrap = "<script src=\"https://cdn.jsdelivr.net/npm/lightweight-charts@latest/dist/lightweight-charts.standalone.production.js\"></script>"
+    # 构造初始数据作为后备
+    try:
+        # 重用 DF 构造
+        initial_arr = []
+        for x in df.to_dict('records'):
+            initial_arr.append({ 'time': int(x['time']), 'open': float(x['open']), 'high': float(x['high']), 'low': float(x['low']), 'close': float(x['close']) })
+    except Exception:
+        initial_arr = []
+    initial_json = json.dumps(_normalize(initial_arr))
+    html_str = (html_tpl
+                .replace('__CID__', cid)
+                .replace('__LC_BOOTSTRAP__', lc_bootstrap)
+                .replace('__INITIAL__', initial_json)
+                .replace('__OVERLAYS__', overlays_json)
+                .replace('__MARKERS__', markers_json)
+                .replace('__SUBS__', subcharts_json))
     ui.html(html_str, sanitize=False).classes('w-full')
+    with ui.expansion('🧪 数据探针 (REST)', value=False).classes('w-full'):
+        def run_probe():
+            import requests
+            try:
+                url = 'http://localhost:8000/api/candles'
+                params = {'inst_id': cid, 'limit': 10}
+                r = requests.get(url, params=params, timeout=5)
+                data = r.json() if r.ok else []
+                ui.label(f"status={r.status_code}, count={len(data)}, sample={data[0] if data else None}")
+            except Exception as e:
+                ui.label(f"探针失败: {e}").classes('text-red-400')
+        ui.button('测试 /api/candles 返回', on_click=run_probe).classes('mt-2')
 
 def render_equity_chart(inst):
     container = ui.column().classes('w-full')
@@ -1222,10 +1294,9 @@ def stop_instance(inst):
 def delete_instance(inst):
     if inst.status == 'RUNNING': process_manager.stop_instance(inst.id)
     session = db_manager.get_session()
-    session.query(StrategyInstance).filter_by(id=inst.id).delete()
-    session.commit()
+    ok = db_manager.delete_instance_cascade(session, inst.id)
     session.close()
-    ui.notify('实例已删除', type='info'); refresh_ui()
+    ui.notify('实例已删除' if ok else '实例删除失败', type='info' if ok else 'negative'); refresh_ui()
 
 # --- Main ---
 db_manager.init_db()

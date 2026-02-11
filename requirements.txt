@@ -13,3 +13,4 @@ psutil
 websocket-client
 ccxt
 python-dateutil
+requests
