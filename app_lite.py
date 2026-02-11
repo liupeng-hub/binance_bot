@@ -1357,7 +1357,9 @@ def strategy_pk_arena():
     st.info("通过多维度回测比拼，筛选出最优的 [策略 + 标的 + 周期] 组合。支持参数网格搜索与贝叶斯优化。")
     
     # --- 1. 发起挑战 ---
-    with st.container(border=True):
+    session = db_manager.get_session()
+    try:
+        with st.container(border=True):
         st.subheader("🏆 发起挑战")
         
         # --- Step 1: Base Config (Interactive) ---
@@ -1639,7 +1641,8 @@ def strategy_pk_arena():
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
                     
-    session.close()
+    finally:
+        session.close()
 
 def user_dashboard():
     menu = st.sidebar.radio("菜单", ["量化工作台", "策略竞技场", "参数调优", "策略文库", "系统设置"])
