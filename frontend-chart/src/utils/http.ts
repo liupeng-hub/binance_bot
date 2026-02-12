@@ -1,5 +1,18 @@
-export async function fetchCandles(instId: string, limit: number = 500, timeframe: string = '1m') {
-  const response = await fetch(`/api/candles?inst_id=${instId}&limit=${limit}&timeframe=${timeframe}`);
+export async function fetchCandles(instId: string | null, symbol: string | null, limit: number = 500, timeframe: string = '1m', indicators: any[] = []) {
+  let url = `/api/candles?limit=${limit}&timeframe=${timeframe}`;
+  if (instId) {
+      url += `&inst_id=${instId}`;
+  } else if (symbol) {
+      url += `&symbol=${symbol}`;
+  } else {
+      throw new Error("Either instId or symbol must be provided");
+  }
+  
+  if (indicators && indicators.length > 0) {
+      url += `&indicators=${encodeURIComponent(JSON.stringify(indicators))}`;
+  }
+
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error('Failed to fetch candles');
   }
@@ -9,19 +22,19 @@ export async function fetchCandles(instId: string, limit: number = 500, timefram
   // Let's handle both for robustness, though I know I updated the backend.
   
   let candles = [];
-  let indicators = { main: [], sub: [] };
+  let chartIndicators = { main: [], sub: [] };
 
   if (Array.isArray(data)) {
       candles = data;
   } else {
       candles = data.candles || [];
-      indicators = data.indicators || { main: [], sub: [] };
+      chartIndicators = data.indicators || { main: [], sub: [] };
   }
 
   // Ensure data is sorted by time
   candles.sort((a: any, b: any) => a.time - b.time);
   
-  return { candles, indicators };
+  return { candles, indicators: chartIndicators };
 }
 
 export async function fetchTrades(instId: string, limit: number = 100) {

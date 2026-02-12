@@ -4,29 +4,28 @@ import { useChartData } from '../hooks/useChartData';
 import { useChartStore } from '../stores/chartStore';
 
 export const ChartPage = () => {
-  const { instId } = useParams<{ instId: string }>();
-  const { theme, toggleTheme } = useChartStore();
+  const { instId, symbol } = useParams<{ instId?: string; symbol?: string }>();
+  const { theme, toggleTheme, timeframe, setTimeframe } = useChartStore();
+  
+  // Use either instId or symbol
+  useChartData(instId || null, symbol || null);
 
-  useChartData(instId || '');
-
-  if (!instId) {
-    return <div className="p-4 text-red-500">Missing Instance ID</div>;
+  if (!instId && !symbol) {
+    return <div className="p-4 text-red-500">Missing Instance ID or Symbol</div>;
   }
 
   return (
     <div className={`w-screen h-screen flex flex-col ${theme === 'dark' ? 'bg-[#1e1e1e]' : 'bg-white'}`}>
-      <header className="h-12 border-b border-gray-700 flex items-center px-4 justify-between shrink-0">
-        <h1 className={`text-sm font-medium ${theme === 'dark' ? 'text-gray-200' : 'text-gray-800'}`}>
-           Instance: {instId}
-        </h1>
-        <button 
-           onClick={toggleTheme}
-           className="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
-        >
-           {theme === 'dark' ? 'Light' : 'Dark'} Mode
-        </button>
+      {/* Minimal Header - Only Show Title */}
+      <header className="h-8 border-b border-gray-700 flex items-center px-4 justify-between shrink-0 bg-[#131722]">
+        <div className="flex items-center gap-2">
+             <span className="text-xs font-bold text-[#2962FF]">TraeBot</span>
+             <span className={`text-xs ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
+                {symbol ? `${symbol}` : `Instance: ${instId}`}
+            </span>
+        </div>
       </header>
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 relative">
          <ChartWidget />
       </div>
     </div>

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useChartStore } from '../stores/chartStore';
 
-export function useWS(instId: string) {
+export function useWS(instId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null); // Use number for browser environment
   const updateCandle = useChartStore((state) => state.updateCandle);
   const updateIndicators = useChartStore((state) => state.updateIndicators);
 
   const connect = useCallback(() => {
+    if (!instId) return; // Guard
+    
     // Avoid multiple connections
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
         return;

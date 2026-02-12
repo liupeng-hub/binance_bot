@@ -15,7 +15,32 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     configs = relationship("ExchangeConfig", back_populates="user")
+    accounts = relationship("ExchangeAccount", back_populates="user")
     instances = relationship("StrategyInstance", back_populates="user")
+
+class ExchangeAccount(Base):
+    """
+    交易所账户表 (多账户支持)
+    """
+    __tablename__ = 'exchange_accounts'
+    
+    id = Column(String, primary_key=True) # UUID
+    user_id = Column(Integer, ForeignKey('users.id'))
+    
+    alias = Column(String, nullable=False) # 账户别名
+    exchange = Column(String, default='binance') # binance, okx, etc.
+    account_type = Column(String, default='live') # live, testnet
+    
+    api_key_enc = Column(String)
+    secret_key_enc = Column(String)
+    
+    # 额外配置 (JSON): passphrase, subaccount_id, etc.
+    extra_config = Column(Text)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", back_populates="accounts")
+    instances = relationship("StrategyInstance", back_populates="account")
 
 class ExchangeConfig(Base):
     __tablename__ = 'exchange_configs'
@@ -39,6 +64,7 @@ class StrategyInstance(Base):
     
     id = Column(String, primary_key=True) # UUID
     user_id = Column(Integer, ForeignKey('users.id'))
+    account_id = Column(String, ForeignKey('exchange_accounts.id'), nullable=True) # 关联的具体账户
     symbol = Column(String, nullable=False)
     strategy_name = Column(String, nullable=False)
     config_json = Column(Text) # JSON string of params
@@ -52,6 +78,7 @@ class StrategyInstance(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="instances")
+    account = relationship("ExchangeAccount", back_populates="instances")
 
 class StrategyState(Base):
     """

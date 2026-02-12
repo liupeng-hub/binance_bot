@@ -5,6 +5,7 @@ interface ChartState {
   candles: Candle[];
   markers: TradeMarker[];
   indicators: Indicators | null;
+  selectedIndicators: any[]; // User selected indicators
   isLoading: boolean;
   error: string | null;
   theme: 'light' | 'dark';
@@ -14,6 +15,7 @@ interface ChartState {
   setMarkers: (markers: TradeMarker[]) => void;
   setIndicators: (indicators: Indicators) => void;
   updateIndicators: (newValues: Record<string, any>) => void;
+  setSelectedIndicators: (inds: any[]) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   toggleTheme: () => void;
@@ -24,6 +26,7 @@ export const useChartStore = create<ChartState>((set) => ({
   candles: [],
   markers: [],
   indicators: null,
+  selectedIndicators: [],
   isLoading: false,
   error: null,
   theme: 'dark',
@@ -99,6 +102,7 @@ export const useChartStore = create<ChartState>((set) => ({
           
           return { indicators: newIndicators };
       }),
+  setSelectedIndicators: (inds) => set({ selectedIndicators: inds }),
   setLoading: (isLoading) => set({ isLoading }),
   setError: (error) => set({ error }),
   toggleTheme: () => set((state) => ({ theme: state.theme === 'light' ? 'dark' : 'light' })),

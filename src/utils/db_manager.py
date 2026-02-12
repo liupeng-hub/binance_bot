@@ -4,8 +4,9 @@ from cryptography.fernet import Fernet
 import os
 import hashlib
 import json
+import uuid
 from dotenv import load_dotenv
-from .db_models import Base, User, TradeRecord, EquityRecord, SignalRecord, StrategyState, StrategyInstance
+from .db_models import Base, User, TradeRecord, EquityRecord, SignalRecord, StrategyState, StrategyInstance, ExchangeAccount
 
 class DBManager:
     def __init__(self, db_url=None):
@@ -52,10 +53,10 @@ class DBManager:
                 echo=False,
                 connect_args=connect_args,
                 pool_pre_ping=True,      # 每次取连接前先探测，防止超时断开
-                pool_recycle=3600,       # 每小时回收一次连接
-                pool_size=int(os.environ.get('DB_POOL_SIZE', 5)),      # 增加默认连接池大小 2->5
-                max_overflow=int(os.environ.get('DB_MAX_OVERFLOW', 10)), # 允许溢出 0->10，以应对突发请求
-                pool_timeout=int(os.environ.get('DB_POOL_TIMEOUT', 30)) # 增加超时等待 10->30秒
+                pool_recycle=1800,       # 缩短回收时间 (1小时 -> 30分钟)
+                pool_size=int(os.environ.get('DB_POOL_SIZE', 10)),      # 增大默认池大小 (5 -> 10)
+                max_overflow=int(os.environ.get('DB_MAX_OVERFLOW', 20)), # 增大溢出限制 (10 -> 20)
+                pool_timeout=int(os.environ.get('DB_POOL_TIMEOUT', 60)) # 延长超时等待 (30 -> 60秒)
             )
             
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False, autoflush=True, autocommit=False)
@@ -64,6 +65,20 @@ class DBManager:
         """创建表结构并初始化默认管理员"""
         # 1. 创建普通表
         Base.metadata.create_all(self.engine)
+        
+        # 1.5 简单的 Schema 迁移 (检查并添加新列)
+        try:
+            from sqlalchemy import inspect, text
+            inspector = inspect(self.engine)
+            if 'strategy_instances' in inspector.get_table_names():
+                cols = [c['name'] for c in inspector.get_columns('strategy_instances')]
+                if 'account_id' not in cols:
+                    print("⚠️ Migrating: Adding account_id to strategy_instances...")
+                    with self.engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE strategy_instances ADD COLUMN account_id VARCHAR;"))
+                        conn.commit()
+        except Exception as e:
+            print(f"⚠️ Migration check failed: {e}")
         
         # 2. 如果是 PostgreSQL，尝试启用 TimescaleDB 扩展并转换超表
         if 'postgresql' in self.db_url:
@@ -136,6 +151,10 @@ class DBManager:
             session.commit()
             print("Default admin user created (admin/admin123)")
         session.close()
+    
+    def get_all_users(self, session):
+        """获取所有用户 (Admin Use)"""
+        return session.query(User).all()
 
     def encrypt_secret(self, text):
         if not text: return None
@@ -144,6 +163,48 @@ class DBManager:
     def decrypt_secret(self, encrypted_text):
         if not encrypted_text: return None
         return self.cipher.decrypt(encrypted_text.encode()).decode()
+
+    # --- Exchange Account Management ---
+    def add_exchange_account(self, session, user_id, alias, api_key, secret_key, account_type='live', exchange='binance', extra_config=None):
+        """添加新的交易所账户配置"""
+        # Check alias uniqueness for this user
+        existing = session.query(ExchangeAccount).filter_by(user_id=user_id, alias=alias).first()
+        if existing:
+            raise ValueError(f"Account alias '{alias}' already exists.")
+            
+        new_account = ExchangeAccount(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            alias=alias,
+            exchange=exchange,
+            account_type=account_type,
+            api_key_enc=self.encrypt_secret(api_key),
+            secret_key_enc=self.encrypt_secret(secret_key),
+            extra_config=json.dumps(extra_config) if extra_config else None
+        )
+        session.add(new_account)
+        return new_account
+
+    def get_exchange_accounts(self, session, user_id):
+        """获取用户的所有账户配置"""
+        return session.query(ExchangeAccount).filter_by(user_id=user_id).all()
+
+    def get_exchange_account(self, session, account_id):
+        return session.query(ExchangeAccount).filter_by(id=account_id).first()
+
+    def delete_exchange_account(self, session, account_id, user_id):
+        """删除账户配置 (需检查是否有运行中的实例关联)"""
+        # Check for running instances
+        running_instances = session.query(StrategyInstance).filter_by(account_id=account_id, status='RUNNING').first()
+        if running_instances:
+            raise ValueError("Cannot delete account with running instances.")
+            
+        account = session.query(ExchangeAccount).filter_by(id=account_id, user_id=user_id).first()
+        if account:
+            session.delete(account)
+            session.commit() # Commit the deletion
+            return True
+        return False
 
     def delete_instance_cascade(self, session, instance_id: str):
         """删除实例及其相关记录，避免外键约束冲突"""

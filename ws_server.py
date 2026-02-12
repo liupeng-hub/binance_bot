@@ -79,23 +79,34 @@ def _download_lightweight_charts_assets():
         print(f"⚠️ Could not prepare LightweightCharts assets: {e}")
 
 @app.get("/api/candles")
-def get_initial_candles(inst_id: str = Query(...), limit: int = Query(500), timeframe: str = Query(None)):
+def get_initial_candles(inst_id: str = Query(None), symbol: str = Query(None), limit: int = Query(500), timeframe: str = Query(None), indicators: str = Query(None)):
     session = db_manager.get_session()
     try:
-        inst = session.query(StrategyInstance).filter_by(id=inst_id).first()
-        if not inst:
-            return {"candles": [], "indicators": {"main": [], "sub": []}}
-        try:
-            cfg = json.loads(inst.config_json) if inst.config_json else {}
-            # If timeframe provided via Query, use it; otherwise fallback to config
-            if not timeframe:
-                timeframe = cfg.get('sys', {}).get('timeframe')
-        except Exception:
-            if not timeframe:
-                timeframe = None
+        target_symbol = symbol
+        strategy_config = {}
+        strategy_name = None
+        
+        if inst_id:
+            inst = session.query(StrategyInstance).filter_by(id=inst_id).first()
+            if inst:
+                target_symbol = inst.symbol
+                strategy_name = inst.strategy_name
+                strategy_config = inst.config_json
+                try:
+                    cfg = json.loads(inst.config_json) if inst.config_json else {}
+                    if not timeframe:
+                        timeframe = cfg.get('sys', {}).get('timeframe')
+                except Exception:
+                    pass
+
+        if not target_symbol:
+             return {"candles": [], "indicators": {"main": [], "sub": []}}
+
+        if not timeframe:
+            timeframe = '15m' # Default
         
         # Load Candle Data
-        df = load_kline_data(inst.symbol, timeframe=timeframe, limit=limit)
+        df = load_kline_data(target_symbol, timeframe=timeframe, limit=limit)
         if df.empty:
             return {"candles": [], "indicators": {"main": [], "sub": []}}
             
@@ -109,8 +120,27 @@ def get_initial_candles(inst_id: str = Query(...), limit: int = Query(500), time
         } for _, row in df.iterrows()]
 
         # Calculate Indicators
+        main_overlays, sub_charts = [], []
         from src.utils.data_helper import calculate_indicators
-        main_overlays, sub_charts = calculate_indicators(df, inst.strategy_name, inst.config_json)
+        
+        # Parse requested indicators (JSON string)
+        requested_inds = []
+        if indicators:
+            try:
+                requested_inds = json.loads(indicators)
+            except:
+                pass
+        
+        # If strategy exists, calculate its indicators (Legacy behavior)
+        # AND/OR calculate requested indicators
+        # Note: calculate_indicators now handles both via arguments
+        
+        main_overlays, sub_charts = calculate_indicators(
+            df, 
+            strategy_name=strategy_name, 
+            config_json=strategy_config,
+            requested_indicators=requested_inds
+        )
         
         return {
             "candles": candles,
